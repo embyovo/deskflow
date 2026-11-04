@@ -1,0 +1,78 @@
+# Windows build workflow for this fork.
+#
+# Builds the complete application (GUI + core, not only the unit tests) with
+# MSVC 2022, Qt and OpenSSL 3 from vcpkg, then uploads the installer package and
+# the executables as artifacts.
+
+name: Windows Build
+
+on:
+  push:
+    branches: [master, feature/pause-on-focus]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_CONFIGURE: "cmake -Bbuild -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+
+jobs:
+  windows:
+    name: windows-2022-x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      # Gets all the tags so that `git describe` used by get-version works.
+      - name: Fancy Checkout
+        uses: sithlord48/fancy-checkout@v2
+
+      # This effectively runs `vcvarsall.bat`; MSVC itself is pre-installed on the runner.
+      - name: Setup VC++ environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: amd64
+          spectre: true
+
+      # Installs Qt with jurplel/install-qt-action, builds and caches OpenSSL 3
+      # with vcpkg and installs WiX (needed for the .msi package).
+      - name: Install dependencies
+        id: get-deps
+        uses: ./.github/actions/install-dependencies
+        with:
+          qt-version: 6.12
+          vcpkg-triplet: x64-windows-release
+
+      - name: Get version
+        uses: ./.github/actions/get-version
+
+      - name: Configure
+        run: ${{env.CMAKE_CONFIGURE}} -G Ninja ${{ steps.get-deps.outputs.vcpkg-cmake-config }} -DPACKAGE_VERSION_LABEL="${{env.DESKFLOW_PACKAGE_VERSION}}"
+
+      # Builds every target and then the packages ("package" target), so a
+      # missing translation unit fails the job instead of going unnoticed.
+      - name: Build
+        run: cmake --build build --config Release -j8 --target package
+
+      - name: Tests
+        uses: ./.github/actions/run-tests
+        timeout-minutes: 10
+        with:
+          job: windows-2022-x64
+
+      - name: Test package
+        uses: ./.github/actions/test-package
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-deskflow-windows-2022-x64
+          path: |
+            build/deskflow[-_]*.*
+            build/bin/deskflow*.exe

@@ -51,7 +51,7 @@ try {
   Write-Step "Repository: $repoRoot"
 
   # --- refuse to start with uncommitted work -------------------------------
-  $status = & git status --porcelain
+  $status = & git status --porcelain --untracked-files=no
   if ($status) {
     Write-Fail 'The working tree has uncommitted changes. Commit or stash them first:'
     $status | ForEach-Object { Write-Host "    $_" }

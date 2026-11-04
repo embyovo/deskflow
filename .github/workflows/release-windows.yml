@@ -1,0 +1,82 @@
+# Windows release workflow for this fork.
+#
+# Triggered by tags like `v1.2.3`. Builds the complete application with MSVC
+# 2022, Qt and OpenSSL 3 from vcpkg, then creates a GitHub release that carries
+# the version number, the generated change notes and the built artifacts.
+
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CMAKE_CONFIGURE: "cmake -Bbuild -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+
+jobs:
+  release:
+    name: release-windows-2022-x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Fancy Checkout
+        uses: sithlord48/fancy-checkout@v2
+
+      - name: Setup VC++ environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: amd64
+          spectre: true
+
+      - name: Install dependencies
+        id: get-deps
+        uses: ./.github/actions/install-dependencies
+        with:
+          qt-version: 6.12
+          vcpkg-triplet: x64-windows-release
+
+      - name: Get version
+        uses: ./.github/actions/get-version
+
+      - name: Configure
+        run: ${{env.CMAKE_CONFIGURE}} -G Ninja ${{ steps.get-deps.outputs.vcpkg-cmake-config }} -DPACKAGE_VERSION_LABEL="${{env.DESKFLOW_PACKAGE_VERSION}}"
+
+      - name: Build
+        run: cmake --build build --config Release -j8 --target package
+
+      - name: Tests
+        uses: ./.github/actions/run-tests
+        timeout-minutes: 10
+        with:
+          job: release-windows-2022-x64
+
+      - name: Test package
+        uses: ./.github/actions/test-package
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-deskflow-windows-2022-x64
+          path: |
+            build/deskflow[-_]*.*
+            build/bin/deskflow*.exe
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Deskflow ${{ env.DESKFLOW_PACKAGE_VERSION }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            build/deskflow[-_]*.*
+            build/bin/deskflow*.exe

@@ -74,6 +74,10 @@ try {
     Write-Step "Remote '$UpstreamRemote' -> $currentUrl"
   }
 
+  # --- fetch ----------------------------------------------------------------
+  Write-Step "Fetching '$UpstreamRemote'"
+  Invoke-Git fetch --prune $UpstreamRemote | ForEach-Object { Write-Note $_ }
+
   # --- figure out upstream's default branch ---------------------------------
   & git remote set-head $UpstreamRemote --auto *> $null
   $upstreamHead = (& git symbolic-ref --short "refs/remotes/$UpstreamRemote/HEAD" 2>$null)
@@ -82,11 +86,16 @@ try {
     Write-Note "Could not detect the upstream default branch, assuming '$upstreamHead'."
   }
   $upstreamBranch = $upstreamHead -replace "^$UpstreamRemote/", ''
-  Write-Step "Upstream default branch: $upstreamBranch"
+  $target = "$UpstreamRemote/$upstreamBranch"
 
-  # --- fetch ----------------------------------------------------------------
-  Write-Step "Fetching '$UpstreamRemote'"
-  Invoke-Git fetch --prune $UpstreamRemote | ForEach-Object { Write-Note $_ }
+  & git show-ref --verify --quiet "refs/remotes/$target"
+  if ($LASTEXITCODE -ne 0) {
+    Write-Fail "Branch '$target' does not exist after fetching."
+    Write-Note "Known upstream branches:"
+    & git branch --remotes --list "$UpstreamRemote/*" | ForEach-Object { Write-Host "    $_" }
+    exit 1
+  }
+  Write-Step "Upstream default branch: $upstreamBranch"
 
   # --- pick the branch to update -------------------------------------------
   if (-not $Branch) {
@@ -106,14 +115,13 @@ try {
   Invoke-Git switch $Branch | ForEach-Object { Write-Note $_ }
 
   # --- already up to date? -------------------------------------------------
-  & git merge-base --is-ancestor "$UpstreamRemote/$upstreamBranch" "refs/heads/$Branch"
+  & git merge-base --is-ancestor $target "refs/heads/$Branch"
   if ($LASTEXITCODE -eq 0) {
-    Write-Step "Nothing to do, '$Branch' already contains '$UpstreamRemote/$upstreamBranch'."
+    Write-Step "Nothing to do, '$Branch' already contains '$target'."
     exit 0
   }
 
   # --- merge or rebase -----------------------------------------------------
-  $target = "$UpstreamRemote/$upstreamBranch"
   if ($Rebase) {
     Write-Step "Rebasing '$Branch' onto '$target' (history is rewritten, a force-push will be needed)"
     $gitArgs = @('rebase', $target)

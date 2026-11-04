@@ -135,16 +135,17 @@ configuration stops at `find_package(OpenSSL 3 REQUIRED)`).
 
 ## Syncing with upstream
 
-`scripts/sync-upstream.ps1` merges the latest commits of the official Deskflow
-repository into the current branch. It never pushes and never resolves conflicts
-on its own.
+`.github/scripts/sync-upstream.ps1` merges the latest commits of the official
+Deskflow repository into the current branch. It never pushes and never resolves
+conflicts on its own. The repository ignores its top level `scripts` folder, so
+the script lives under `.github/scripts`:
 
 ```powershell
 # from the repository root, on feature/pause-on-focus
-.\scripts\sync-upstream.ps1
+.\.github\scripts\sync-upstream.ps1
 
 # explicit branch, or rebase instead of merge
-.\scripts\sync-upstream.ps1 -Branch feature/pause-on-focus -Rebase
+.\.github\scripts\sync-upstream.ps1 -Branch feature/pause-on-focus -Rebase
 ```
 
 What it does:
@@ -182,6 +183,6 @@ reports that there is nothing to do.
 | `src/lib/server/CMakeLists.txt` | Builds the new source file. |
 | `.github/workflows/windows-build.yml` | Windows build job (MSVC 2022, Qt, OpenSSL 3 from vcpkg) with installer artifacts. |
 | `.github/workflows/release-windows.yml` | Tag driven Windows build that publishes a GitHub release. |
-| `scripts/sync-upstream.ps1` | Merges upstream into the current branch and stops on conflicts. |
+| `.github/scripts/sync-upstream.ps1` | Merges upstream into the current branch and stops on conflicts. |
 | `src/unittests/server/FocusPauseTests.*`, `CMakeLists.txt` | Unit tests for the matching and resume logic. |
 | `docs/pause-on-focus.md` | This document. |

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "deskflow/ActiveAppInfo.h"
 #include "deskflow/ClipboardTypes.h"
 #include "deskflow/IComputer.h"
 #include "deskflow/KeyTypes.h"
@@ -221,6 +222,12 @@ public:
   //@}
   //! @name accessors
   //@{
+
+  //! Get the application with keyboard focus
+  /*!
+  Returns the foreground application of the platform computer.
+  */
+  ActiveAppInfo getActiveApp() const;
 
   //! Test if cursor on computer
   /*!

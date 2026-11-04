@@ -14,6 +14,7 @@
 #include "base/IEventQueue.h"
 #include "base/Log.h"
 #include "base/TMethodJob.h"
+#include "base/Unicode.h"
 #include "client/Client.h"
 #include "common/Constants.h"
 #include "common/Settings.h"
@@ -32,6 +33,7 @@
 #include <algorithm>
 #include <comutil.h>
 #include <string.h>
+#include <string_view>
 
 // suppress warning about GetVersionEx, which is used indirectly in this
 // compilation unit.
@@ -1720,6 +1722,49 @@ std::string MSWindowsComputer::getSecureInputApp() const
 {
   // ignore on Windows
   return "";
+}
+
+ActiveAppInfo MSWindowsComputer::getActiveApp() const
+{
+  ActiveAppInfo info;
+
+  // the foreground window belongs to the application the user is working in
+  const HWND window = GetForegroundWindow();
+  if (window == nullptr) {
+    return info;
+  }
+
+  // a window title can be empty (e.g. some full screen games), it is only
+  // used when the pause list also matches on the process name.
+  const auto maxTitleLength = 512;
+  wchar_t windowText[maxTitleLength];
+  if (const int length = GetWindowTextW(window, windowText, maxTitleLength); length > 0) {
+    info.m_windowTitle = Unicode::UTF16ToUTF8(
+        std::string_view(reinterpret_cast<const char *>(windowText), length * sizeof(wchar_t))
+    );
+  }
+
+  DWORD processId = 0;
+  if (GetWindowThreadProcessId(window, &processId) == 0 || processId == 0) {
+    return info;
+  }
+
+  if (const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId); process != nullptr) {
+    wchar_t modulePath[MAX_PATH];
+    DWORD pathLength = MAX_PATH;
+    if (QueryFullProcessImageNameW(process, 0, modulePath, &pathLength) && pathLength > 0) {
+      std::wstring_view path(modulePath, pathLength);
+      if (const size_t separator = path.find_last_of(L"\\/"); separator != std::wstring_view::npos) {
+        path = path.substr(separator + 1);
+      }
+      info.m_processName = Unicode::UTF16ToUTF8(
+          std::string_view(reinterpret_cast<const char *>(path.data()), path.size() * sizeof(wchar_t))
+      );
+    }
+    CloseHandle(process);
+  }
+
+  return info;
 }
 
 bool MSWindowsComputer::isModifierRepeat(KeyModifierMask oldState, KeyModifierMask state, WPARAM wParam) const

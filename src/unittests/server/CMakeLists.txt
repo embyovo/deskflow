@@ -14,6 +14,14 @@ create_test(
 )
 
 create_test(
+  NAME FocusPauseTests
+  DEPENDS server
+  LIBS base arch ${extra_libs}
+  SOURCE FocusPauseTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
+)
+
+create_test(
   NAME ServerTests
   DEPENDS server
   LIBS base arch ${extra_libs}

@@ -10,6 +10,7 @@
 
 #include "base/IEventQueue.h"
 #include "base/Log.h"
+#include "common/Settings.h"
 #include "deskflow/AppUtil.h"
 #include "deskflow/Computer.h"
 #include "deskflow/DeskflowException.h"
@@ -35,6 +36,9 @@
 #include <ctime>
 
 using namespace deskflow::server;
+
+// how often the focused application is checked while a pause list is set
+static constexpr double s_pauseCheckInterval = 0.2;
 
 //
 // Server
@@ -126,6 +130,11 @@ Server::Server(ServerConfig &config, PrimaryClient *primaryClient, deskflow::Com
   // set initial configuration
   setConfig(config);
 
+  // watch the focused application so switching can be paused, the focus
+  // object is used as the timer target to keep it apart from the switch timer
+  m_events->addHandler(EventTypes::Timer, &m_focusPause, [this](const auto &) { handlePauseTimeout(); });
+  m_focusPauseTimer = m_events->newTimer(s_pauseCheckInterval, &m_focusPause);
+
   // If we are using libportal, we need to set the primary client first.
   // This enables the rules of the primary client. The hotkeys are then enabled in EiComputer.cpp after the rules
   // registered them.
@@ -167,6 +176,8 @@ Server::~Server()
   m_events->removeHandler(PrimaryComputerFakeInputBegin, m_inputFilter);
   m_events->removeHandler(PrimaryComputerFakeInputEnd, m_inputFilter);
   m_events->removeHandler(Timer, this);
+  m_events->removeHandler(Timer, &m_focusPause);
+  m_events->deleteTimer(m_focusPauseTimer);
   stopSwitch();
 
   try {
@@ -384,6 +395,57 @@ bool Server::isLockedToComputer() const
 
   // not locked
   return false;
+}
+
+bool Server::isPauseActive() const
+{
+  // only pause while the user is on the primary computer.  if the mouse is on
+  // a secondary computer, its foreground application is unrelated and input
+  // must keep being forwarded, otherwise the user would get stuck there.
+  return m_focusPauseActive && m_active == m_primaryClient;
+}
+
+void Server::loadPauseOnFocus()
+{
+  const auto apps = Settings::value(Settings::Server::PauseOnFocusApps).toStringList();
+  const auto titles = Settings::value(Settings::Server::PauseOnFocusTitles).toStringList();
+
+  std::set<std::string> processNames;
+  for (const auto &app : apps) {
+    processNames.insert(app.toStdString());
+  }
+
+  std::vector<std::string> windowTitles;
+  for (const auto &title : titles) {
+    windowTitles.push_back(title.toStdString());
+  }
+
+  m_focusPause.setRules(std::move(processNames), std::move(windowTitles));
+  if (m_focusPause.isEmpty()) {
+    m_focusPauseActive = false;
+    return;
+  }
+
+  LOG_INFO("pausing switching while these applications have focus: %s", apps.join(", ").toStdString().c_str());
+}
+
+void Server::handlePauseTimeout()
+{
+  if (m_focusPause.isEmpty()) {
+    return;
+  }
+
+  const auto app = m_computer->getActiveApp();
+  if (const bool paused = m_focusPause.shouldPause(app); paused != m_focusPauseActive) {
+    m_focusPauseActive = paused;
+    if (paused) {
+      // never let a switch that is already counting down go through
+      stopSwitch();
+      LOG_INFO("paused switching, \"%s\" (%s) has focus", app.m_windowTitle.c_str(), app.m_processName.c_str());
+    } else {
+      LOG_INFO("resumed switching");
+    }
+  }
 }
 
 int32_t Server::getJumpZoneSize(const BaseClientProxy *client) const
@@ -1129,6 +1191,10 @@ void Server::processOptions()
   }
   m_relativeMoves = newRelativeMoves;
   m_protocol = Settings::networkProtocol();
+
+  // the pause list lives in the application settings, so refresh it whenever
+  // the server configuration is reloaded
+  loadPauseOnFocus();
 }
 
 void Server::handleShapeChanged(BaseClientProxy *client)
@@ -1278,6 +1344,13 @@ void Server::handleSwitchWaitTimeout()
   // ignore if mouse is locked to computer
   if (isLockedToComputer()) {
     LOG_VERBOSE("locked to computer");
+    stopSwitch();
+    return;
+  }
+
+  // ignore if the focused application paused switching
+  if (isPauseActive()) {
+    LOG_VERBOSE("switching is paused");
     stopSwitch();
     return;
   }
@@ -1650,6 +1723,14 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
     yc = ay;
   } else if (yc >= ay + ah - zoneSize) {
     yc = ay + ah - 1;
+  }
+
+  // the focused application is on the pause list: stay on this computer.  the
+  // cursor position was saved above so switching resumes from wherever the
+  // mouse is once the pause is over.
+  if (isPauseActive()) {
+    stopSwitch();
+    return false;
   }
 
   // see if we should change computers

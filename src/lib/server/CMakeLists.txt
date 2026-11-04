@@ -32,6 +32,8 @@ add_library(server STATIC
   ClientProxyUnknown.h
   Config.cpp
   Config.h
+  FocusPause.cpp
+  FocusPause.h
   InputFilter.cpp
   InputFilter.h
   PrimaryClient.cpp

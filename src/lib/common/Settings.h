@@ -115,6 +115,8 @@ public:
     inline static const auto GridHeight = QStringLiteral("server/gridHeight");
     inline static const auto GridWidth = QStringLiteral("server/gridWidth");
     inline static const auto Heartbeat = QStringLiteral("server/heartbeat");
+    inline static const auto PauseOnFocusApps = QStringLiteral("server/pauseOnFocusApps");
+    inline static const auto PauseOnFocusTitles = QStringLiteral("server/pauseOnFocusTitles");
     inline static const auto Protocol = QStringLiteral("server/protocol");
     inline static const auto RelativeMouseMoves = QStringLiteral("server/relativeMouseMoves");
     inline static const auto SwitchDelay = QStringLiteral("server/switchDelay");
@@ -332,6 +334,8 @@ private:
     , Server::GridHeight
     , Server::GridWidth
     , Server::Heartbeat
+    , Server::PauseOnFocusApps
+    , Server::PauseOnFocusTitles
     , Server::Protocol
     , Server::RelativeMouseMoves
     , Server::SwitchDelay

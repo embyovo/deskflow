@@ -16,6 +16,7 @@
 #include "deskflow/KeyTypes.h"
 #include "deskflow/MouseTypes.h"
 #include "server/Config.h"
+#include "server/FocusPause.h"
 
 #include <climits>
 #include <map>
@@ -40,6 +41,7 @@ This class implements the top-level server algorithms for deskflow.
 class Server
 {
   using ServerConfig = deskflow::server::Config;
+  using FocusPause = deskflow::server::FocusPause;
 
 public:
   //! Lock cursor to computer data
@@ -217,6 +219,16 @@ private:
   // returns true iff mouse should be locked to the current m_computer
   // according to this object or the primary client.
   bool isLockedToComputer() const;
+
+  // returns true iff switching is paused because a listed app has focus on
+  // the primary computer.
+  bool isPauseActive() const;
+
+  // read the pause on focus settings
+  void loadPauseOnFocus();
+
+  // check if the focused app pauses switching
+  void handlePauseTimeout();
 
   // returns the jump zone of the client
   int32_t getJumpZoneSize(const BaseClientProxy *) const;
@@ -468,4 +480,9 @@ private:
   bool m_defaultLockToComputerState = false;
   bool m_disableLockToComputer = false;
   bool m_enableClipboard = true;
+
+  // pause computer switching while a listed app has focus
+  FocusPause m_focusPause;
+  bool m_focusPauseActive = false;
+  EventQueueTimer *m_focusPauseTimer = nullptr;
 };

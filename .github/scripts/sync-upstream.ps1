@@ -44,7 +44,7 @@ function Invoke-Git {
   }
 
   if ($exitCode -ne 0) {
-    throw "git $($Arguments -join ' ') failed with exit code $exitCode:`n$($output -join "`n")"
+    throw ("git {0} failed with exit code {1}:`n{2}" -f ($Arguments -join ' '), $exitCode, ($output -join "`n"))
   }
   return $output
 }

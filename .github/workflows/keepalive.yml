@@ -1,0 +1,46 @@
+# Keeps the repository "active" so GitHub does not disable this workflow.
+#
+# GitHub disables schedule-triggered workflows after 60 days without repository
+# activity (commits/pushes). A scheduled run alone does not count as activity,
+# so this job commits a timestamp once a week. The push uses GITHUB_TOKEN, which
+# does not start other workflows, and the message carries [skip ci] as well.
+
+name: Repository keepalive
+
+on:
+  schedule:
+    # Mondays, 04:17 UTC - deliberately off the hour so it does not race other jobs.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    name: keepalive
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update the timestamp
+        run: |
+          printf 'Last keepalive: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .github/keepalive.md
+
+      - name: Commit the timestamp
+        run: |
+          if git diff --quiet; then
+            echo "Nothing changed, no activity needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: keepalive $(date -u +%Y-%m-%d) [skip ci]"
+          git push

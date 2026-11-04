@@ -91,13 +91,35 @@ never match the pause list. Run Deskflow elevated as well if you need that.
 
 The matching rules are covered by `src/unittests/server/FocusPauseTests.cpp`.
 
+## Building on Windows
+
+The official build needs Qt 6.7+ (MSVC kit), CMake 3.24+, Visual Studio 2022
+with the C++ workload and OpenSSL 3 (vcpkg recommended, or `OPENSSL_ROOT_DIR`):
+
+```
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
+  -DCMAKE_PREFIX_PATH=C:\Qt\6.9.0\msvc2022_64 ^
+  -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows
+cmake --build build --config Release --target deskflow-core
+```
+
+Run the tests with `ctest --test-dir build -R FocusPauseTests`.
+
+This change was compiled on Windows with Qt 6.9.0 (MinGW 13.1 kit, CMake 4.4):
+the unit test executable builds and passes all cases, and `Server.cpp`,
+`Settings.cpp`, `Computer.cpp` and `MSWindowsComputer.cpp` compile cleanly.  A
+full application build could not be finished in this environment because no
+MSVC toolchain and no OpenSSL 3 development libraries were available (CMake
+configuration stops at `find_package(OpenSSL 3 REQUIRED)`).
+
 ## Changed files
 
 | File | Change |
 | --- | --- |
 | `src/lib/server/FocusPause.h`, `.cpp` | New, pause list matching and settings rules. |
 | `src/lib/server/Server.h`, `.cpp` | Polls the focused application, blocks switching and delayed switches while paused. |
-| `src/lib/deskflow/IPlatformComputer.h` | New `ActiveAppInfo` and `getActiveApp()` platform hook with a safe default. |
+| `src/lib/deskflow/ActiveAppInfo.h` | New, describes the focused application. |
+| `src/lib/deskflow/IPlatformComputer.h` | New `getActiveApp()` platform hook with a safe default. |
 | `src/lib/deskflow/Computer.h`, `.cpp` | Pass through `getActiveApp()`. |
 | `src/lib/platform/MSWindowsComputer.h`, `.cpp` | Windows implementation of `getActiveApp()`. |
 | `src/lib/common/Settings.h`, `.cpp` | New `server/pauseOnFocusApps` and `server/pauseOnFocusTitles` settings. |

@@ -32,9 +32,19 @@ function Write-Fail([string]$Message) {
 function Invoke-Git {
   param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
-  $output = & git @Arguments 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    throw "git $($Arguments -join ' ') failed:`n$($output -join "`n")"
+  # Native commands write progress to stderr, which PowerShell turns into
+  # error records. Temporarily allow those so only the exit code decides.
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $output = & git @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previous
+  }
+
+  if ($exitCode -ne 0) {
+    throw "git $($Arguments -join ' ') failed with exit code $exitCode:`n$($output -join "`n")"
   }
   return $output
 }
@@ -159,6 +169,12 @@ try {
   exit 0
 } catch {
   Write-Fail $_.Exception.Message
-  Write-Note 'The repository may be in the middle of a merge/rebase. Use `git status` and `git merge --abort`.'
+  if ($repoRoot) {
+    $mergeHead = Join-Path $repoRoot '.git\MERGE_HEAD'
+    $rebaseDir = Join-Path $repoRoot '.git\rebase-merge'
+    if ((Test-Path $mergeHead) -or (Test-Path $rebaseDir)) {
+      Write-Note 'The repository is in the middle of a merge/rebase. Use `git status`, then `git merge --abort` to give up.'
+    }
+  }
   exit 1
 }

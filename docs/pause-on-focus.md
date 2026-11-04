@@ -11,10 +11,9 @@ No restart is needed.
 
 ## Configuration
 
-The pause list lives in the application settings file and can be edited with any
-text editor while Deskflow is not running (or from the GUI, if a GUI field for it
-is added later). The file is `deskflow.conf` next to the other Deskflow
-settings, in the `[server]` section:
+The pause list lives in the application settings file (`deskflow.conf`, in the
+`[server]` section) and can be edited from the GUI as described below. Editing
+the file by hand works while Deskflow is not running:
 
 ```ini
 [server]
@@ -37,6 +36,28 @@ Windows process names are the executable file names as shown in Task Manager,
 for example `chrome.exe`, `firefox.exe`, `notepad.exe` or `game.exe`. The
 well known system names are `explorer.exe` for the desktop and `ApplicationFrameHost.exe`
 for some Windows apps.
+
+## Editing the list in the GUI
+
+The server settings dialog has a group box called **Pause switching on focus**
+on the **Advanced** tab (`src/lib/gui/dialogs/ServerConfigDialog.ui`).
+
+* The combo box lists the executable names of all processes that are currently
+  running. It is editable, so the list doubles as a search field: type a few
+  letters to filter and pick the entry, or type an executable name that is not
+  running yet (`chrome.exe`) and press **Add**.
+* **Add** appends the name to the list below the combo box. Choosing an entry
+  from the drop down adds it straight away.
+* **Remove** deletes the selected entries (multi selection is enabled),
+  **Clear** empties the whole list.
+* **Only when the window title contains** is the optional title filter and
+  accepts a comma separated list, for example `YouTube, Visual Studio`.
+* All entries are stored in `server/pauseOnFocusApps` and
+  `server/pauseOnFocusTitles` when the dialog is accepted.
+
+The dialog restarts the core process when it is accepted (the same
+`m_coreProcess.restart()` path the other server settings use), so the new list
+is used right away and no manual restart is needed.
 
 ## Behaviour
 
@@ -112,6 +133,40 @@ full application build could not be finished in this environment because no
 MSVC toolchain and no OpenSSL 3 development libraries were available (CMake
 configuration stops at `find_package(OpenSSL 3 REQUIRED)`).
 
+## Syncing with upstream
+
+`scripts/sync-upstream.ps1` merges the latest commits of the official Deskflow
+repository into the current branch. It never pushes and never resolves conflicts
+on its own.
+
+```powershell
+# from the repository root, on feature/pause-on-focus
+.\scripts\sync-upstream.ps1
+
+# explicit branch, or rebase instead of merge
+.\scripts\sync-upstream.ps1 -Branch feature/pause-on-focus -Rebase
+```
+
+What it does:
+
+1. Checks that it runs inside a work tree and refuses to start if there are
+   uncommitted changes.
+2. Adds the `upstream` remote (`https://github.com/deskflow/deskflow.git`) if it
+   is missing, and fails with a hint if it points somewhere else.
+3. Detects the upstream default branch (`git remote set-head upstream --auto`,
+   `master` as fallback) and fetches with `--prune`.
+4. Switches to the feature branch and exits cleanly if it is already up to date.
+5. Merges `upstream/<default>` into the branch. A **merge** is used by default
+   and not a rebase, because this branch is published in a fork: a rebase
+   rewrites commits that are already pushed and would need a force-push, which
+   this workflow must avoid. `-Rebase` is available for a private/local branch.
+6. On conflicts it stops, lists the conflicted files and prints the commands to
+   continue (`git add` + `git merge --continue`) or to give up
+   (`git merge --abort`). It exits with code 1 and pushes nothing.
+
+The script is safe to run repeatedly: without new upstream commits it just
+reports that there is nothing to do.
+
 ## Changed files
 
 | File | Change |
@@ -123,6 +178,10 @@ configuration stops at `find_package(OpenSSL 3 REQUIRED)`).
 | `src/lib/deskflow/Computer.h`, `.cpp` | Pass through `getActiveApp()`. |
 | `src/lib/platform/MSWindowsComputer.h`, `.cpp` | Windows implementation of `getActiveApp()`. |
 | `src/lib/common/Settings.h`, `.cpp` | New `server/pauseOnFocusApps` and `server/pauseOnFocusTitles` settings. |
+| `src/lib/gui/dialogs/ServerConfigDialog.ui`, `.h`, `.cpp` | New "Pause switching on focus" group box: pick a running executable, type one, add/remove/clear, optional title filter. |
 | `src/lib/server/CMakeLists.txt` | Builds the new source file. |
+| `.github/workflows/windows-build.yml` | Windows build job (MSVC 2022, Qt, OpenSSL 3 from vcpkg) with installer artifacts. |
+| `.github/workflows/release-windows.yml` | Tag driven Windows build that publishes a GitHub release. |
+| `scripts/sync-upstream.ps1` | Merges upstream into the current branch and stops on conflicts. |
 | `src/unittests/server/FocusPauseTests.*`, `CMakeLists.txt` | Unit tests for the matching and resume logic. |
 | `docs/pause-on-focus.md` | This document. |

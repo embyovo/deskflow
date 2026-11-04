@@ -21,6 +21,14 @@
 #include <QFileDialog>
 #include <QMessageBox>
 
+#ifdef Q_OS_WIN
+// clang-format off
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <TlHelp32.h>
+// clang-format on
+#endif
+
 using enum ComputerConfig::SwitchCorner;
 
 ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
@@ -48,6 +56,10 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
 
   if (!deskflow::platform::isWindows())
     ui->cbWin32KeepForeground->setVisible(false);
+  ui->cbPauseApp->setEditable(true);
+  ui->cbPauseApp->setInsertPolicy(QComboBox::NoInsert);
+  ui->cbPauseApp->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+  ui->cbPauseApp->addItems(runningProcessNames());
   initConnections();
 }
 
@@ -92,6 +104,8 @@ void ServerConfigDialog::save()
   Settings::setValue(Settings::Server::Win32KeepForeground, m_win32keepForeground);
   Settings::setValue(Settings::Server::ExternalConfig, ui->groupExternalConfig->isChecked());
   Settings::setValue(Settings::Server::ExternalConfigFile, ui->lineConfigFile->text());
+  Settings::setValue(Settings::Server::PauseOnFocusApps, m_pauseApps);
+  Settings::setValue(Settings::Server::PauseOnFocusTitles, pauseTitles());
 
   QStringList computerNames;
   const auto computerList = m_computerSetupModel.m_computers;
@@ -400,6 +414,8 @@ void ServerConfigDialog::loadFromConfig()
   m_disableLockToComputer = Settings::value(Settings::Server::DisableLockToComputer).toBool();
   m_enableClipboard = Settings::value(Settings::Server::EnableClipboard).toBool();
   m_clipboardSize = Settings::value(Settings::Server::ClipboardSize).toUInt();
+  m_pauseApps = Settings::value(Settings::Server::PauseOnFocusApps).toStringList();
+  ui->linePauseTitles->setText(Settings::value(Settings::Server::PauseOnFocusTitles).toStringList().join(", "));
 
   ui->lineConfigFile->setText(serverConfig().configFile());
   ui->groupExternalConfig->setChecked(serverConfig().useExternalConfig());
@@ -461,6 +477,7 @@ void ServerConfigDialog::refreshControls()
   ui->cbEnableClipboard->setChecked(m_enableClipboard);
   ui->sbClipboardSizeLimit->setEnabled(m_enableClipboard);
   ui->sbClipboardSizeLimit->setValue(m_clipboardSize);
+  refreshPauseAppList();
 }
 
 void ServerConfigDialog::initConnections() const
@@ -519,6 +536,12 @@ void ServerConfigDialog::initConnections() const
       &ServerConfigDialog::setButtonBoxEnabledButtons
   );
   connect(Settings::instance(), &Settings::settingsWritableChanged, this, &ServerConfigDialog::updateControls);
+
+  connect(ui->btnAddPauseApp, &QPushButton::clicked, this, &ServerConfigDialog::addPauseApp);
+  connect(ui->btnRemovePauseApp, &QPushButton::clicked, this, &ServerConfigDialog::removePauseApp);
+  connect(ui->btnClearPauseApps, &QPushButton::clicked, this, &ServerConfigDialog::clearPauseApps);
+  connect(ui->cbPauseApp, &QComboBox::activated, this, &ServerConfigDialog::addPauseApp);
+  connect(ui->linePauseTitles, &QLineEdit::textChanged, this, &ServerConfigDialog::setButtonBoxEnabledButtons);
 }
 
 void ServerConfigDialog::updateControls() const
@@ -538,6 +561,7 @@ void ServerConfigDialog::updateControls() const
   ui->sbSwitchDoubleTap->setEnabled(writable && ui->cbSwitchDoubleTap->isChecked());
   ui->sbSwitchDelay->setEnabled(writable && ui->cbSwitchDelay->isChecked());
   ui->groupExternalConfig->setEnabled(writable);
+  ui->groupPauseOnFocus->setEnabled(writable);
   setButtonBoxEnabledButtons();
 }
 
@@ -559,6 +583,8 @@ void ServerConfigDialog::restoreFromDefaults()
 
   ui->groupExternalConfig->setChecked(Settings::defaultValue(Settings::Server::ExternalConfig).toBool());
   ui->lineConfigFile->setText(Settings::defaultValue(Settings::Server::ExternalConfigFile).toString());
+  m_pauseApps = Settings::defaultValue(Settings::Server::PauseOnFocusApps).toStringList();
+  ui->linePauseTitles->setText(Settings::defaultValue(Settings::Server::PauseOnFocusTitles).toStringList().join(", "));
 
   refreshControls();
   updateControls();
@@ -606,7 +632,9 @@ bool ServerConfigDialog::isGeneralConfigModified() const
          m_relativeMouseMoves != Settings::value(Settings::Server::RelativeMouseMoves).toBool() ||
          m_win32keepForeground != Settings::value(Settings::Server::Win32KeepForeground).toBool() ||
          m_disableLockToComputer != Settings::value(Settings::Server::DisableLockToComputer).toBool() ||
-         m_defaultLockToComputerState != Settings::value(Settings::Server::DefaultLockToComputerState).toBool();
+         m_defaultLockToComputerState != Settings::value(Settings::Server::DefaultLockToComputerState).toBool() ||
+         m_pauseApps != Settings::value(Settings::Server::PauseOnFocusApps).toStringList() ||
+         pauseTitles() != Settings::value(Settings::Server::PauseOnFocusTitles).toStringList();
 }
 
 bool ServerConfigDialog::isGeneralConfigDefault() const
@@ -625,7 +653,9 @@ bool ServerConfigDialog::isGeneralConfigDefault() const
          m_relativeMouseMoves == Settings::defaultValue(Settings::Server::RelativeMouseMoves).toBool() &&
          m_win32keepForeground == Settings::defaultValue(Settings::Server::Win32KeepForeground).toBool() &&
          m_disableLockToComputer == Settings::defaultValue(Settings::Server::DisableLockToComputer).toBool() &&
-         m_defaultLockToComputerState == Settings::defaultValue(Settings::Server::DefaultLockToComputerState).toBool();
+         m_defaultLockToComputerState == Settings::defaultValue(Settings::Server::DefaultLockToComputerState).toBool() &&
+         m_pauseApps == Settings::defaultValue(Settings::Server::PauseOnFocusApps).toStringList() &&
+         pauseTitles() == Settings::defaultValue(Settings::Server::PauseOnFocusTitles).toStringList();
 }
 
 void ServerConfigDialog::setButtonBoxEnabledButtons() const
@@ -634,4 +664,87 @@ void ServerConfigDialog::setButtonBoxEnabledButtons() const
   m_buttonBox->enableSave(writable && (isGeneralConfigModified() || !(m_originalServerConfig == m_serverConfig)));
   m_buttonBox->enableReset(writable && (isGeneralConfigModified() || !(m_originalServerConfig == m_serverConfig)));
   m_buttonBox->enableRestoreDefaults(writable && !isGeneralConfigDefault() && ui->tabWidget->currentIndex() == 2);
+}
+
+void ServerConfigDialog::addPauseApp()
+{
+  const auto appName = ui->cbPauseApp->currentText().trimmed();
+  if (appName.isEmpty())
+    return;
+
+  if (!m_pauseApps.contains(appName, Qt::CaseInsensitive)) {
+    m_pauseApps.append(appName);
+    m_pauseApps.sort(Qt::CaseInsensitive);
+  }
+  refreshPauseAppList();
+  ui->cbPauseApp->setCurrentIndex(-1);
+  ui->cbPauseApp->setEditText(QString());
+  ui->cbPauseApp->setFocus();
+  setButtonBoxEnabledButtons();
+}
+
+void ServerConfigDialog::removePauseApp()
+{
+  const auto selectedItems = ui->listPauseApps->selectedItems();
+  if (selectedItems.isEmpty())
+    return;
+
+  for (const auto *item : selectedItems)
+    m_pauseApps.removeAll(item->text());
+  refreshPauseAppList();
+  setButtonBoxEnabledButtons();
+}
+
+void ServerConfigDialog::clearPauseApps()
+{
+  if (m_pauseApps.isEmpty())
+    return;
+
+  m_pauseApps.clear();
+  refreshPauseAppList();
+  setButtonBoxEnabledButtons();
+}
+
+void ServerConfigDialog::refreshPauseAppList()
+{
+  ui->listPauseApps->clear();
+  ui->listPauseApps->addItems(m_pauseApps);
+
+  const bool writable = Settings::isWritable();
+  ui->btnRemovePauseApp->setEnabled(writable && !m_pauseApps.isEmpty());
+  ui->btnClearPauseApps->setEnabled(writable && !m_pauseApps.isEmpty());
+}
+
+QStringList ServerConfigDialog::pauseTitles() const
+{
+  QStringList titles;
+  for (const auto &part : ui->linePauseTitles->text().split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+    const auto title = part.trimmed();
+    if (!title.isEmpty())
+      titles.append(title);
+  }
+  return titles;
+}
+
+QStringList ServerConfigDialog::runningProcessNames()
+{
+  QStringList names;
+#ifdef Q_OS_WIN
+  const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE)
+    return names;
+
+  PROCESSENTRY32W entry;
+  entry.dwSize = sizeof(entry);
+  if (Process32FirstW(snapshot, &entry)) {
+    do {
+      const auto name = QString::fromWCharArray(entry.szExeFile);
+      if (!name.isEmpty() && !names.contains(name, Qt::CaseInsensitive))
+        names.append(name);
+    } while (Process32NextW(snapshot, &entry));
+  }
+  CloseHandle(snapshot);
+  names.sort(Qt::CaseInsensitive);
+#endif
+  return names;
 }

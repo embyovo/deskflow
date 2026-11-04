@@ -168,6 +168,26 @@ What it does:
 The script is safe to run repeatedly: without new upstream commits it just
 reports that there is nothing to do.
 
+## Repository keepalive
+
+GitHub automatically disables **schedule**-triggered workflows after 60 days
+without repository activity. Runs of a scheduled workflow do not count as
+activity, only commits and pushes do. `.github/workflows/keepalive.yml` runs
+every Monday at 04:17 UTC and rewrites `.github/keepalive.md` with a timestamp,
+then commits it back to the default branch:
+
+* the commit is the activity GitHub looks for, so the schedule keeps running;
+* the push is done with the built in `GITHUB_TOKEN`, and the commit message ends
+  with `[skip ci]`, so neither this nor any other workflow is started by it;
+* the job takes well under a minute of runner time per week and touches no build
+  output, so it cannot interfere with `windows-build.yml` or
+  `release-windows.yml`.
+
+If the repository is idle for more than 60 days anyway, re-enable the workflow
+from the Actions page: **Actions → Repository keepalive → Enable workflow**, or
+run `gh workflow enable keepalive.yml`. The same applies to any workflow GitHub
+disabled, which is always listed at the top of the Actions page.
+
 ## Changed files
 
 | File | Change |
@@ -184,5 +204,6 @@ reports that there is nothing to do.
 | `.github/workflows/windows-build.yml` | Windows build job (MSVC 2022, Qt, OpenSSL 3 from vcpkg) with installer artifacts. |
 | `.github/workflows/release-windows.yml` | Tag driven Windows build that publishes a GitHub release. |
 | `.github/scripts/sync-upstream.ps1` | Merges upstream into the current branch and stops on conflicts. |
+| `.github/workflows/keepalive.yml`, `.github/keepalive.md` | Weekly timestamp commit so GitHub does not disable the scheduled workflow. |
 | `src/unittests/server/FocusPauseTests.*`, `CMakeLists.txt` | Unit tests for the matching and resume logic. |
 | `docs/pause-on-focus.md` | This document. |

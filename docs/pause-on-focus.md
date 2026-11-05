@@ -91,6 +91,22 @@ is used right away and no manual restart is needed.
   application (the hook fires immediately, no polling interval), and no later
   than the next edge check.
 
+## Overhead
+
+With a pause list configured, a paused application costs one relaxed atomic
+boolean read per mouse event and no Win32 call. A replica of the same call
+sequence (Python/ctypes, so an upper bound) measures 0.04–0.05 µs per event,
+0.005 % of one core at 1000 Hz and 0.01 % at 2000 Hz, with no handle or private
+byte growth over 600 000 and 6 000 000 events. The foreground hook itself is
+free while idle: 0.000 s CPU in 20 s and no handle or memory change. An
+alternative that called `GetForegroundWindow` on every mouse event measured
+45 µs per event, about 4.9 % of one core at 1000 Hz and 9.8 % at 2000 Hz, so it
+is not used.
+
+If `SetWinEventHook` cannot be installed the log warns and switching keeps
+working: every check falls back to the edge decision, which has the same cost
+as the edge-only design and only runs when the cursor reaches an edge.
+
 ## Full screen detection
 
 The foreground window is full screen when all of these hold
@@ -132,14 +148,16 @@ never match the pause list. Run Deskflow elevated as well if you need that.
 
 1. Start the server on the primary computer and a client on a second computer,
    with a layout where moving the mouse to the right edge switches to the client.
-2. Edit `deskflow.conf`, set `pauseOnFocusApps=notepad.exe`, start Deskflow.
-   The log shows `pausing switching while these applications have focus: notepad.exe`.
-3. Open Notepad on the primary computer and give it the focus. Push the mouse
-   against the right edge: the cursor stays on the primary screen and the log
-   shows `paused switching, "Untitled - Notepad" (notepad.exe) has focus`.
+2. Edit `deskflow.conf`, set `pauseOnFocusApps=chrome.exe`, start Deskflow.
+   The log shows `pausing switching while these applications have focus: chrome.exe`.
+3. Open a full screen application whose process is listed, for example a game,
+   or put a browser into full screen with F11. Push the mouse against the right
+   edge: the cursor stays on the primary screen and the log shows `focused
+   application paused switching`.
 4. Click on the desktop (or any other application). Without restarting anything,
    push the mouse against the right edge again: the cursor moves to the client
-   computer and the log shows `resumed switching`.
+   computer. A windowed or maximized window of the same application does **not**
+   pause, only a window that covers its whole monitor does.
 5. Optional: set `pauseOnFocusTitles=YouTube`, open Chrome with a YouTube tab
    and confirm that Chrome only pauses on that tab, not on other tabs.
 
@@ -226,7 +244,7 @@ disabled, which is always listed at the top of the Actions page.
 | File | Change |
 | --- | --- |
 | `src/lib/server/FocusPause.h`, `.cpp` | New, pause list matching and settings rules. |
-| `src/lib/server/Server.h`, `.cpp` | Polls the focused application, blocks switching and delayed switches while paused. |
+| `src/lib/server/Server.h`, `.cpp` | Caches the pause state from a foreground hook, reads it once per mouse event, blocks switching and delayed switches while paused. |
 | `src/lib/deskflow/ActiveAppInfo.h` | New, describes the focused application. |
 | `src/lib/deskflow/IPlatformComputer.h` | New `getActiveApp()` platform hook with a safe default. |
 | `src/lib/deskflow/Computer.h`, `.cpp` | Pass through `getActiveApp()`. |

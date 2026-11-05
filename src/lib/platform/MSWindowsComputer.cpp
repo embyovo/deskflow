@@ -1793,6 +1793,8 @@ ActiveAppInfo MSWindowsComputer::getActiveApp() const
     return info;
   }
 
+  info.m_fullscreen = isFullscreenWindow(window, processId);
+
   if (const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId); process != nullptr) {
     wchar_t modulePath[MAX_PATH];
     DWORD pathLength = MAX_PATH;

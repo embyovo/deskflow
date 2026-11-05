@@ -103,8 +103,8 @@ bool FocusPause::shouldPause(const ActiveAppInfo &app) const
   }
 
   // the title list is optional and narrows the match, e.g. only pause while
-  // chrome shows a window titled "video".  this runs every 200ms, so it must
-  // not copy the title to compare it.
+  // chrome shows a window titled "video".  this runs only when focus changes
+  // or the cursor reaches an edge, so it must not copy the title to compare it.
   return m_windowTitles.empty() || std::ranges::any_of(m_windowTitles, [&app](const auto &fragment) {
     return containsIgnoreCase(app.m_windowTitle, fragment);
   });

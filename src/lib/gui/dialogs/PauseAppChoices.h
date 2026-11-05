@@ -17,14 +17,19 @@ struct PauseAppChoice
   QString m_executable;
   //! Friendly name shown to the user, may be empty
   QString m_description;
-  //! 0 = foreground, 1 = has a visible window, 2 = everything else
+  //! 0 = foreground (visible, not minimized), 1 = minimized or hidden, 2 = no window
   int m_group = 2;
+  //! True for the application that owns the foreground window, only used for the label and the order
+  bool m_current = false;
 
   //! Text shown in the combo box, "description (executable)" when a description exists
   QString label() const;
 };
 
-//! Order of the process choice list: group first, then the displayed name
+//! Group of an application from the state of its windows, foreground wins over background
+int pauseAppGroup(bool hasForegroundWindow, bool hasBackgroundWindow);
+
+//! Order of the process choice list: group first, the current application next, then the displayed name
 bool pauseAppLess(const PauseAppChoice &left, const PauseAppChoice &right);
 
 //! The executable that should be marked as the foreground application.

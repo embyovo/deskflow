@@ -1144,15 +1144,23 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>Foreground (%1)</source>
-        <translation>前台应用 (%1)</translation>
+        <translation type="vanished">前台应用 (%1)</translation>
     </message>
     <message>
         <source>Background (%1)</source>
-        <translation>后台运行 (%1)</translation>
+        <translation type="vanished">后台运行 (%1)</translation>
     </message>
     <message>
         <source>Other processes (%1)</source>
         <translation>其他进程 (%1)</translation>
+    </message>
+    <message>
+        <source>Foreground applications (%1)</source>
+        <translation>前台应用 (%1)</translation>
+    </message>
+    <message>
+        <source>Minimized / background (%1)</source>
+        <translation>最小化/后台 (%1)</translation>
     </message>
 </context>
 <context>

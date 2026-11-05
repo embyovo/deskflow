@@ -12,7 +12,7 @@ class PauseAppChoicesTests : public QObject
 {
   Q_OBJECT
 private Q_SLOTS:
-  void groupsAreOrderedForegroundWindowedOther();
+  void groupsAreOrderedForegroundBackgroundOther();
   void sortsByDisplayNameInsideGroup();
   void descriptionIsUsedForDisplayAndOrder();
   void missingDescriptionFallsBackToExecutable();
@@ -20,4 +20,8 @@ private Q_SLOTS:
   void ownWindowFallsBackToTheRecentApplication();
   void ownWindowWithoutRecentHasNoForeground();
   void emptyForegroundFallsBackToTheRecentApplication();
+  void visibleWindowIsForegroundGroup();
+  void minimizedWindowIsBackgroundGroup();
+  void processWithoutWindowIsOtherGroup();
+  void currentForegroundIsSortedFirstInsideGroup();
 };

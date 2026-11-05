@@ -8,23 +8,25 @@
 
 #include "gui/dialogs/PauseAppChoices.h"
 
+#include <algorithm>
+
 using namespace deskflow::gui;
 
-void PauseAppChoicesTests::groupsAreOrderedForegroundWindowedOther()
+void PauseAppChoicesTests::groupsAreOrderedForegroundBackgroundOther()
 {
   PauseAppChoice foreground{QStringLiteral("a.exe"), {}, 0};
-  PauseAppChoice windowed{QStringLiteral("b.exe"), {}, 1};
+  PauseAppChoice background{QStringLiteral("b.exe"), {}, 1};
   PauseAppChoice other{QStringLiteral("c.exe"), {}, 2};
 
-  // the task manager order: foreground application, windowed applications, the rest
-  QVERIFY(pauseAppLess(foreground, windowed));
-  QVERIFY(pauseAppLess(windowed, other));
+  // the task manager order: foreground applications, minimized or hidden ones, the rest
+  QVERIFY(pauseAppLess(foreground, background));
+  QVERIFY(pauseAppLess(background, other));
   QVERIFY(pauseAppLess(foreground, other));
-  QVERIFY(!pauseAppLess(other, windowed));
+  QVERIFY(!pauseAppLess(other, background));
   QVERIFY(!pauseAppLess(foreground, foreground));
 
   // a foreground application with a late name still comes before an early background one
-  QCOMPARE(pauseAppLess(PauseAppChoice{QStringLiteral("zeta.exe"), {}, 0}, windowed), true);
+  QCOMPARE(pauseAppLess(PauseAppChoice{QStringLiteral("zeta.exe"), {}, 0}, background), true);
 }
 
 void PauseAppChoicesTests::sortsByDisplayNameInsideGroup()
@@ -91,6 +93,41 @@ void PauseAppChoicesTests::emptyForegroundFallsBackToTheRecentApplication()
       foregroundExecutable(QString(), QStringLiteral("deskflow.exe"), QStringLiteral("browser.exe")),
       QStringLiteral("browser.exe")
   );
+}
+
+void PauseAppChoicesTests::visibleWindowIsForegroundGroup()
+{
+  // a visible window that is not minimized is on the task bar, so the application is foreground
+  QCOMPARE(pauseAppGroup(true, false), 0);
+  QCOMPARE(pauseAppGroup(true, true), 0);
+}
+
+void PauseAppChoicesTests::minimizedWindowIsBackgroundGroup()
+{
+  // IsIconic is true for a minimized window, the task bar entry is collapsed but the app remains
+  QCOMPARE(pauseAppGroup(false, true), 1);
+}
+
+void PauseAppChoicesTests::processWithoutWindowIsOtherGroup()
+{
+  // tray only helpers and services own no top level window at all
+  QCOMPARE(pauseAppGroup(false, false), 2);
+}
+
+void PauseAppChoicesTests::currentForegroundIsSortedFirstInsideGroup()
+{
+  PauseAppChoice alpha{QStringLiteral("aaa.exe"), {}, 0};
+  PauseAppChoice current{QStringLiteral("zzz.exe"), {}, 0, true};
+
+  // the marker only changes the order inside the group, never the group itself
+  QCOMPARE(current.m_group, 0);
+  QVERIFY(pauseAppLess(current, alpha));
+  QVERIFY(!pauseAppLess(alpha, current));
+
+  QList<PauseAppChoice> choices{alpha, PauseAppChoice{QStringLiteral("mmm.exe"), {}, 1}, current};
+  std::sort(choices.begin(), choices.end(), pauseAppLess);
+  QCOMPARE(choices.first().m_executable, QStringLiteral("zzz.exe"));
+  QCOMPARE(choices.at(1).m_executable, QStringLiteral("aaa.exe"));
 }
 
 QTEST_APPLESS_MAIN(PauseAppChoicesTests)

@@ -15,10 +15,19 @@ QString PauseAppChoice::label() const
   return QStringLiteral("%1 (%2)").arg(m_description, m_executable);
 }
 
+int pauseAppGroup(bool hasForegroundWindow, bool hasBackgroundWindow)
+{
+  if (hasForegroundWindow)
+    return 0;
+  return hasBackgroundWindow ? 1 : 2;
+}
+
 bool pauseAppLess(const PauseAppChoice &left, const PauseAppChoice &right)
 {
   if (left.m_group != right.m_group)
     return left.m_group < right.m_group;
+  if (left.m_current != right.m_current)
+    return left.m_current;
   return left.label().compare(right.label(), Qt::CaseInsensitive) < 0;
 }
 

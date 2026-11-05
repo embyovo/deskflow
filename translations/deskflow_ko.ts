@@ -1140,6 +1140,18 @@ Enabling this setting will disable the server config GUI.</source>
         <source>(current foreground)</source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>Foreground (%1)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Background (%1)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Other processes (%1)</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>SettingsDialog</name>

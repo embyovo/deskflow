@@ -1142,6 +1142,18 @@ Enabling this setting will disable the server config GUI.</source>
         <source>(current foreground)</source>
         <translation>（当前前台）</translation>
     </message>
+    <message>
+        <source>Foreground (%1)</source>
+        <translation>前台应用 (%1)</translation>
+    </message>
+    <message>
+        <source>Background (%1)</source>
+        <translation>后台运行 (%1)</translation>
+    </message>
+    <message>
+        <source>Other processes (%1)</source>
+        <translation>其他进程 (%1)</translation>
+    </message>
 </context>
 <context>
     <name>SettingsDialog</name>

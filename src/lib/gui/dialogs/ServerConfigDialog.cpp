@@ -16,6 +16,7 @@
 #include "dialogs/ActionDialog.h"
 #include "dialogs/ComputerSettingsDialog.h"
 #include "dialogs/HotkeyDialog.h"
+#include "dialogs/PauseAppChoices.h"
 #include "gui/widgets/SettingsDialogButtonBox.h"
 
 #include <QCoreApplication>
@@ -23,6 +24,8 @@
 #include <QFileInfo>
 #include <QListWidgetItem>
 #include <QMessageBox>
+#include <QSet>
+#include <QStandardItemModel>
 
 #include <algorithm>
 
@@ -45,6 +48,8 @@ struct RunningProcess
 {
   QString m_name;
   QString m_description;
+  //! True when the process owns a visible, titled top level window
+  bool m_windowed = false;
 };
 
 //! Full path of a process, or an empty string when it cannot be queried (protected or gone).
@@ -59,6 +64,43 @@ QString processImagePath(DWORD processId)
     CloseHandle(process);
   }
   return path;
+}
+
+QString executableNameFromPath(const QString &path)
+{
+  const int separator = qMax(path.lastIndexOf(QLatin1Char('\\')), path.lastIndexOf(QLatin1Char('/')));
+  return path.mid(separator + 1);
+}
+
+BOOL CALLBACK collectWindowedProcess(HWND window, LPARAM param)
+{
+  auto *names = reinterpret_cast<QSet<QString> *>(param);
+  if (!IsWindowVisible(window) || GetWindowTextLengthW(window) == 0)
+    return TRUE;
+
+  // the desktop, the task bar and our own windows are not applications
+  wchar_t className[64] = {};
+  if (GetClassNameW(window, className, static_cast<int>(std::size(className))) > 0) {
+    if (lstrcmpiW(className, L"Progman") == 0 || lstrcmpiW(className, L"WorkerW") == 0 ||
+        lstrcmpiW(className, L"Shell_TrayWnd") == 0 || lstrcmpiW(className, L"Shell_SecondaryTrayWnd") == 0)
+      return TRUE;
+  }
+
+  DWORD processId = 0;
+  if (GetWindowThreadProcessId(window, &processId) == 0 || processId == GetCurrentProcessId())
+    return TRUE;
+
+  if (const auto path = processImagePath(processId); !path.isEmpty())
+    names->insert(executableNameFromPath(path).toLower());
+  return TRUE;
+}
+
+//! Executables that own a visible, titled window, the task manager's applications group.
+QSet<QString> windowedProcessNames()
+{
+  QSet<QString> names;
+  EnumWindows(collectWindowedProcess, reinterpret_cast<LPARAM>(&names));
+  return names;
 }
 
 //! The FileDescription shown by Task Manager, for example "Google Chrome".
@@ -108,6 +150,7 @@ QList<RunningProcess> runningProcesses()
   if (snapshot == INVALID_HANDLE_VALUE)
     return processes;
 
+  const auto windowed = windowedProcessNames();
   PROCESSENTRY32W entry{};
   entry.dwSize = sizeof(entry);
   if (Process32FirstW(snapshot, &entry)) {
@@ -117,6 +160,7 @@ QList<RunningProcess> runningProcesses()
       if (process.m_name.isEmpty())
         continue;
       process.m_description = fileDescription(processImagePath(entry.th32ProcessID));
+      process.m_windowed = windowed.contains(process.m_name.toLower());
       processes.append(process);
     } while (Process32NextW(snapshot, &entry));
   }
@@ -141,14 +185,14 @@ QString foregroundProcessName()
     return {};
 
   const auto path = processImagePath(processId);
-  const int separator = qMax(path.lastIndexOf(QLatin1Char('\\')), path.lastIndexOf(QLatin1Char('/')));
-  return path.mid(separator + 1);
+  return executableNameFromPath(path);
 }
 #else
 struct RunningProcess
 {
   QString m_name;
   QString m_description;
+  bool m_windowed = false;
 };
 
 QList<RunningProcess> runningProcesses()
@@ -866,21 +910,21 @@ void ServerConfigDialog::populatePauseAppChoices()
   ui->cbPauseApp->clear();
   m_appDescriptions.clear();
 
-  QList<RunningProcess> processes;
+  QList<deskflow::gui::PauseAppChoice> choices;
   for (const auto &process : runningProcesses()) {
     const auto key = process.m_name.toLower();
     if (!m_appDescriptions.contains(key) || m_appDescriptions.value(key).isEmpty())
       m_appDescriptions.insert(key, process.m_description);
 
     bool known = false;
-    for (const auto &seen : processes) {
-      if (seen.m_name.compare(process.m_name, Qt::CaseInsensitive) == 0) {
+    for (const auto &seen : choices) {
+      if (seen.m_executable.compare(process.m_name, Qt::CaseInsensitive) == 0) {
         known = true;
         break;
       }
     }
     if (!known)
-      processes.append(process);
+      choices.append({process.m_name, process.m_description, process.m_windowed ? 1 : 2});
   }
 
   // The window with focus is the settings dialog itself while it is open, so it never counts
@@ -890,32 +934,42 @@ void ServerConfigDialog::populatePauseAppChoices()
   if (foreground.compare(ownName, Qt::CaseInsensitive) == 0)
     foreground.clear();
 
-  auto addChoice = [this](const RunningProcess &process, const QString &prefix) {
-    const auto label = process.m_description.isEmpty()
-                           ? process.m_name
-                           : QStringLiteral("%1 (%2)").arg(process.m_description, process.m_name);
-    ui->cbPauseApp->addItem(prefix.isEmpty() ? label : QStringLiteral("%1 %2").arg(prefix, label), process.m_name);
-  };
-
-  // Like the task manager, the application that has focus is listed first, the rest is sorted by name.
-  const bool hasForeground = !foreground.isEmpty();
-  if (hasForeground) {
-    for (const auto &process : processes) {
-      if (process.m_name.compare(foreground, Qt::CaseInsensitive) == 0) {
-        addChoice(process, tr("(current foreground)"));
-        break;
-      }
-    }
+  for (auto &choice : choices) {
+    if (!foreground.isEmpty() && choice.m_executable.compare(foreground, Qt::CaseInsensitive) == 0)
+      choice.m_group = 0;
   }
 
-  std::sort(processes.begin(), processes.end(), [](const RunningProcess &left, const RunningProcess &right) {
-    return left.m_name.compare(right.m_name, Qt::CaseInsensitive) < 0;
-  });
+  std::sort(choices.begin(), choices.end(), deskflow::gui::pauseAppLess);
 
-  for (const auto &process : processes) {
-    if (hasForeground && process.m_name.compare(foreground, Qt::CaseInsensitive) == 0)
-      continue;
-    addChoice(process, QString());
+  // Group headers are disabled so they can be seen but never chosen, like the task manager groups.
+  auto addHeader = [this](const QString &text) {
+    const int index = ui->cbPauseApp->count();
+    ui->cbPauseApp->addItem(QStringLiteral("── %1 ──").arg(text));
+    if (auto *model = qobject_cast<QStandardItemModel *>(ui->cbPauseApp->model()); model != nullptr) {
+      if (auto *item = model->item(index); item != nullptr)
+        item->setFlags(item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+    }
+  };
+
+  int counts[3] = {};
+  for (const auto &choice : choices)
+    counts[choice.m_group]++;
+
+  int currentGroup = -1;
+  for (const auto &choice : choices) {
+    if (choice.m_group != currentGroup) {
+      currentGroup = choice.m_group;
+      if (currentGroup == 0)
+        addHeader(tr("Foreground (%1)").arg(counts[0]));
+      else if (currentGroup == 1)
+        addHeader(tr("Background (%1)").arg(counts[1]));
+      else
+        addHeader(tr("Other processes (%1)").arg(counts[2]));
+    }
+
+    const auto label =
+        currentGroup == 0 ? QStringLiteral("%1 %2").arg(tr("(current foreground)"), choice.label()) : choice.label();
+    ui->cbPauseApp->addItem(label, choice.m_executable);
   }
 
   ui->cbPauseApp->setCurrentIndex(-1);

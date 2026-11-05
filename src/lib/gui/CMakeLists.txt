@@ -126,3 +126,8 @@ target_link_libraries(${target}
     net
     Qt6::Widgets
 )
+
+if(WIN32)
+  # DwmGetWindowAttribute, used to skip cloaked windows of suspended UWP apps
+  target_link_libraries(${target} PUBLIC dwmapi)
+endif()

@@ -27,4 +27,13 @@ struct PauseAppChoice
 //! Order of the process choice list: group first, then the displayed name
 bool pauseAppLess(const PauseAppChoice &left, const PauseAppChoice &right);
 
+//! The executable that should be marked as the foreground application.
+/*!
+ * \param current Executable of the real foreground window, empty when unknown
+ * \param ownExecutable Our own executable, which owns the foreground while the dialog is open
+ * \param recent Executable of the most recent window in z order behind our own
+ * \return The application the user came from, empty when it cannot be told apart from us
+ */
+QString foregroundExecutable(const QString &current, const QString &ownExecutable, const QString &recent);
+
 } // namespace deskflow::gui

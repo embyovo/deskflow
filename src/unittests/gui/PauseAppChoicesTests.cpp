@@ -59,4 +59,38 @@ void PauseAppChoicesTests::missingDescriptionFallsBackToExecutable()
   QCOMPARE(described.label(), QStringLiteral("Custom Tool (custom.exe)"));
 }
 
+void PauseAppChoicesTests::foregroundIsKeptWhenItIsAnotherApplication()
+{
+  QCOMPARE(
+      foregroundExecutable(QStringLiteral("editor.exe"), QStringLiteral("deskflow.exe"), QStringLiteral("browser.exe")),
+      QStringLiteral("editor.exe")
+  );
+}
+
+void PauseAppChoicesTests::ownWindowFallsBackToTheRecentApplication()
+{
+  // while the settings dialog is open GetForegroundWindow returns our own window
+  QCOMPARE(
+      foregroundExecutable(
+          QStringLiteral("Deskflow.exe"), QStringLiteral("deskflow.exe"), QStringLiteral("msedge.exe")
+      ),
+      QStringLiteral("msedge.exe")
+  );
+}
+
+void PauseAppChoicesTests::ownWindowWithoutRecentHasNoForeground()
+{
+  QVERIFY(foregroundExecutable(QStringLiteral("deskflow.exe"), QStringLiteral("deskflow.exe"), QString()).isEmpty());
+  // a recent window of our own process is not an application either
+  QVERIFY(foregroundExecutable(QString(), QStringLiteral("deskflow.exe"), QStringLiteral("Deskflow.exe")).isEmpty());
+}
+
+void PauseAppChoicesTests::emptyForegroundFallsBackToTheRecentApplication()
+{
+  QCOMPARE(
+      foregroundExecutable(QString(), QStringLiteral("deskflow.exe"), QStringLiteral("browser.exe")),
+      QStringLiteral("browser.exe")
+  );
+}
+
 QTEST_APPLESS_MAIN(PauseAppChoicesTests)

@@ -16,4 +16,8 @@ private Q_SLOTS:
   void sortsByDisplayNameInsideGroup();
   void descriptionIsUsedForDisplayAndOrder();
   void missingDescriptionFallsBackToExecutable();
+  void foregroundIsKeptWhenItIsAnotherApplication();
+  void ownWindowFallsBackToTheRecentApplication();
+  void ownWindowWithoutRecentHasNoForeground();
+  void emptyForegroundFallsBackToTheRecentApplication();
 };

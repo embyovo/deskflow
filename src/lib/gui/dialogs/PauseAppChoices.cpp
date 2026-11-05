@@ -22,4 +22,13 @@ bool pauseAppLess(const PauseAppChoice &left, const PauseAppChoice &right)
   return left.label().compare(right.label(), Qt::CaseInsensitive) < 0;
 }
 
+QString foregroundExecutable(const QString &current, const QString &ownExecutable, const QString &recent)
+{
+  if (!current.isEmpty() && current.compare(ownExecutable, Qt::CaseInsensitive) != 0)
+    return current;
+  if (!recent.isEmpty() && recent.compare(ownExecutable, Qt::CaseInsensitive) != 0)
+    return recent;
+  return {};
+}
+
 } // namespace deskflow::gui

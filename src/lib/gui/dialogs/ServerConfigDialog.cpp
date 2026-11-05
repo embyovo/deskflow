@@ -22,6 +22,7 @@
 #include <QCoreApplication>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHash>
 #include <QListWidgetItem>
 #include <QMessageBox>
 #include <QSet>
@@ -33,6 +34,7 @@
 // clang-format off
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <dwmapi.h>
 #include <TlHelp32.h>
 #include <winver.h>
 // clang-format on
@@ -43,14 +45,32 @@
 using enum ComputerConfig::SwitchCorner;
 
 namespace {
-#ifdef Q_OS_WIN
 struct RunningProcess
 {
   QString m_name;
   QString m_description;
-  //! True when the process owns a visible, titled top level window
+  //! True when the process owns a visible top level window
   bool m_windowed = false;
 };
+
+//! Everything the pause application list needs, plus the numbers used by its diagnostic.
+struct ProcessEnumeration
+{
+  QList<RunningProcess> m_processes;
+#ifdef Q_OS_WIN
+  QSet<QString> m_windowed;
+  int m_windows = 0;
+  int m_hiddenWindows = 0;
+  int m_shellWindows = 0;
+  int m_ownWindows = 0;
+  int m_cloakedWindows = 0;
+  int m_helperWindows = 0;
+  int m_unnamedWindows = 0;
+  int m_captionlessWindows = 0;
+#endif
+};
+
+#ifdef Q_OS_WIN
 
 //! Full path of a process, or an empty string when it cannot be queried (protected or gone).
 QString processImagePath(DWORD processId)
@@ -72,35 +92,124 @@ QString executableNameFromPath(const QString &path)
   return path.mid(separator + 1);
 }
 
+//! Process names by id from one tool help snapshot; independent of OpenProcess rights.
+QHash<DWORD, QString> processNamesById()
+{
+  QHash<DWORD, QString> names;
+  const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE)
+    return names;
+
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  if (Process32FirstW(snapshot, &entry)) {
+    do {
+      const auto name = QString::fromWCharArray(entry.szExeFile);
+      if (!name.isEmpty())
+        names.insert(entry.th32ProcessID, name);
+    } while (Process32NextW(snapshot, &entry));
+  }
+  CloseHandle(snapshot);
+  return names;
+}
+
+QString windowClassName(HWND window)
+{
+  wchar_t className[64] = {};
+  if (GetClassNameW(window, className, static_cast<int>(std::size(className))) <= 0)
+    return {};
+  return QString::fromWCharArray(className);
+}
+
+//! The desktop, the task bar and their helper windows are not applications.
+bool isShellWindow(HWND window)
+{
+  const auto className = windowClassName(window);
+  return className.compare(QLatin1String("Progman"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("WorkerW"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("Shell_TrayWnd"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("Shell_SecondaryTrayWnd"), Qt::CaseInsensitive) == 0;
+}
+
+//! Suspended UWP windows and windows of another virtual desktop stay visible but are cloaked.
+bool isCloakedWindow(HWND window)
+{
+  constexpr DWORD kDwmwaCloaked = 14;
+  DWORD cloaked = 0;
+  return SUCCEEDED(DwmGetWindowAttribute(window, kDwmwaCloaked, &cloaked, sizeof(cloaked))) && cloaked != 0;
+}
+
+struct WindowScan
+{
+  QHash<DWORD, QString> m_namesById;
+  QSet<QString> m_windowed;
+  int m_windows = 0;
+  int m_hidden = 0;
+  int m_shell = 0;
+  int m_own = 0;
+  int m_cloaked = 0;
+  int m_helper = 0;
+  int m_unnamed = 0;
+  int m_captionless = 0;
+};
+
 BOOL CALLBACK collectWindowedProcess(HWND window, LPARAM param)
 {
-  auto *names = reinterpret_cast<QSet<QString> *>(param);
-  if (!IsWindowVisible(window) || GetWindowTextLengthW(window) == 0)
+  auto *scan = reinterpret_cast<WindowScan *>(param);
+  scan->m_windows++;
+  if (!IsWindowVisible(window)) {
+    scan->m_hidden++;
     return TRUE;
-
-  // the desktop, the task bar and our own windows are not applications
-  wchar_t className[64] = {};
-  if (GetClassNameW(window, className, static_cast<int>(std::size(className))) > 0) {
-    if (lstrcmpiW(className, L"Progman") == 0 || lstrcmpiW(className, L"WorkerW") == 0 ||
-        lstrcmpiW(className, L"Shell_TrayWnd") == 0 || lstrcmpiW(className, L"Shell_SecondaryTrayWnd") == 0)
-      return TRUE;
   }
 
   DWORD processId = 0;
-  if (GetWindowThreadProcessId(window, &processId) == 0 || processId == GetCurrentProcessId())
+  if (GetWindowThreadProcessId(window, &processId) == 0 || processId == 0) {
+    scan->m_unnamed++;
     return TRUE;
+  }
+  if (processId == GetCurrentProcessId()) {
+    scan->m_own++;
+    return TRUE;
+  }
+  if (isShellWindow(window)) {
+    scan->m_shell++;
+    return TRUE;
+  }
+  if (isCloakedWindow(window)) {
+    scan->m_cloaked++;
+    return TRUE;
+  }
 
-  if (const auto path = processImagePath(processId); !path.isEmpty())
-    names->insert(executableNameFromPath(path).toLower());
+  // Only tool windows without a caption are helper windows. A visible window whose caption cannot
+  // be read (elevated or a fragile cross process window) still counts as a window of the application.
+  if (GetWindowTextLengthW(window) == 0) {
+    scan->m_captionless++;
+    if ((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0) {
+      scan->m_helper++;
+      return TRUE;
+    }
+  }
+
+  // The tool help name also covers processes that OpenProcess is not allowed to query.
+  auto name = scan->m_namesById.value(processId);
+  if (name.isEmpty()) {
+    name = executableNameFromPath(processImagePath(processId));
+    if (name.isEmpty()) {
+      scan->m_unnamed++;
+      return TRUE;
+    }
+  }
+  scan->m_windowed.insert(name.toLower());
   return TRUE;
 }
 
-//! Executables that own a visible, titled window, the task manager's applications group.
-QSet<QString> windowedProcessNames()
+//! Executables that own a visible top level window, the task manager's applications group.
+WindowScan scanWindows()
 {
-  QSet<QString> names;
-  EnumWindows(collectWindowedProcess, reinterpret_cast<LPARAM>(&names));
-  return names;
+  WindowScan scan;
+  scan.m_namesById = processNamesById();
+  EnumWindows(collectWindowedProcess, reinterpret_cast<LPARAM>(&scan));
+  return scan;
 }
 
 //! The FileDescription shown by Task Manager, for example "Google Chrome".
@@ -143,14 +252,15 @@ QString fileDescription(const QString &path)
   return QString::fromWCharArray(text).trimmed();
 }
 
-QList<RunningProcess> runningProcesses()
+ProcessEnumeration runningProcesses()
 {
-  QList<RunningProcess> processes;
+  ProcessEnumeration result;
+  const auto scan = scanWindows();
+
   const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snapshot == INVALID_HANDLE_VALUE)
-    return processes;
+    return result;
 
-  const auto windowed = windowedProcessNames();
   PROCESSENTRY32W entry{};
   entry.dwSize = sizeof(entry);
   if (Process32FirstW(snapshot, &entry)) {
@@ -160,12 +270,22 @@ QList<RunningProcess> runningProcesses()
       if (process.m_name.isEmpty())
         continue;
       process.m_description = fileDescription(processImagePath(entry.th32ProcessID));
-      process.m_windowed = windowed.contains(process.m_name.toLower());
-      processes.append(process);
+      process.m_windowed = scan.m_windowed.contains(process.m_name.toLower());
+      result.m_processes.append(process);
     } while (Process32NextW(snapshot, &entry));
   }
   CloseHandle(snapshot);
-  return processes;
+
+  result.m_windowed = scan.m_windowed;
+  result.m_windows = scan.m_windows;
+  result.m_hiddenWindows = scan.m_hidden;
+  result.m_shellWindows = scan.m_shell;
+  result.m_ownWindows = scan.m_own;
+  result.m_cloakedWindows = scan.m_cloaked;
+  result.m_helperWindows = scan.m_helper;
+  result.m_unnamedWindows = scan.m_unnamed;
+  result.m_captionlessWindows = scan.m_captionless;
+  return result;
 }
 
 //! The executable that owns the foreground window.
@@ -177,30 +297,54 @@ QList<RunningProcess> runningProcesses()
 QString foregroundProcessName()
 {
   const HWND window = GetForegroundWindow();
-  if (window == nullptr)
+  // A task bar menu is not the application the user works in, fall back to the z order instead.
+  if (window == nullptr || isShellWindow(window))
     return {};
 
   DWORD processId = 0;
   if (GetWindowThreadProcessId(window, &processId) == 0 || processId == 0)
     return {};
 
-  const auto path = processImagePath(processId);
-  return executableNameFromPath(path);
+  const auto name = processNamesById().value(processId);
+  return name.isEmpty() ? executableNameFromPath(processImagePath(processId)) : name;
+}
+
+//! The application the user was working in before our own dialog took the foreground.
+/*!
+ * GetForegroundWindow returns our own settings dialog while it is open, so walking the z order is
+ * the only way to find the application the user came from. Topmost and no activate windows are
+ * overlays or helpers, never that application.
+ */
+QString recentForegroundProcessName()
+{
+  const auto namesById = processNamesById();
+  HWND window = GetTopWindow(nullptr);
+  for (int guard = 0; window != nullptr && guard < 1024; ++guard) {
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    const auto exStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    if (processId != 0 && processId != GetCurrentProcessId() && IsWindowVisible(window) &&
+        GetWindowTextLengthW(window) > 0 && (exStyle & (WS_EX_TOPMOST | WS_EX_NOACTIVATE)) == 0 &&
+        !isShellWindow(window) && !isCloakedWindow(window)) {
+      if (const auto name = namesById.value(processId); !name.isEmpty())
+        return name;
+    }
+    window = GetWindow(window, GW_HWNDNEXT);
+  }
+  return {};
 }
 #else
-struct RunningProcess
-{
-  QString m_name;
-  QString m_description;
-  bool m_windowed = false;
-};
-
-QList<RunningProcess> runningProcesses()
+ProcessEnumeration runningProcesses()
 {
   return {};
 }
 
 QString foregroundProcessName()
+{
+  return {};
+}
+
+QString recentForegroundProcessName()
 {
   return {};
 }
@@ -910,8 +1054,9 @@ void ServerConfigDialog::populatePauseAppChoices()
   ui->cbPauseApp->clear();
   m_appDescriptions.clear();
 
+  const auto running = runningProcesses();
   QList<deskflow::gui::PauseAppChoice> choices;
-  for (const auto &process : runningProcesses()) {
+  for (const auto &process : running.m_processes) {
     const auto key = process.m_name.toLower();
     if (!m_appDescriptions.contains(key) || m_appDescriptions.value(key).isEmpty())
       m_appDescriptions.insert(key, process.m_description);
@@ -928,11 +1073,11 @@ void ServerConfigDialog::populatePauseAppChoices()
   }
 
   // The window with focus is the settings dialog itself while it is open, so it never counts
-  // as the foreground application the user is interested in.
-  QString foreground = foregroundProcessName();
+  // as the foreground application. Use the application right behind it instead of leaving the
+  // foreground group empty, which is what made the group invisible to users.
   const auto ownName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
-  if (foreground.compare(ownName, Qt::CaseInsensitive) == 0)
-    foreground.clear();
+  const auto foreground =
+      deskflow::gui::foregroundExecutable(foregroundProcessName(), ownName, recentForegroundProcessName());
 
   for (auto &choice : choices) {
     if (!foreground.isEmpty() && choice.m_executable.compare(foreground, Qt::CaseInsensitive) == 0)
@@ -971,6 +1116,23 @@ void ServerConfigDialog::populatePauseAppChoices()
         currentGroup == 0 ? QStringLiteral("%1 %2").arg(tr("(current foreground)"), choice.label()) : choice.label();
     ui->cbPauseApp->addItem(label, choice.m_executable);
   }
+
+#ifdef Q_OS_WIN
+  // Never hide an empty group silently. These numbers tell which step dropped an application.
+  if (!running.m_processes.isEmpty()) {
+    qDebug().nospace() << "pause app choices: processes=" << running.m_processes.size()
+                       << " windowed=" << running.m_windowed.size() << " windows=" << running.m_windows
+                       << " hidden=" << running.m_hiddenWindows << " shell=" << running.m_shellWindows
+                       << " own=" << running.m_ownWindows << " cloaked=" << running.m_cloakedWindows
+                       << " captionless=" << running.m_captionlessWindows << " helper=" << running.m_helperWindows
+                       << " unnamed=" << running.m_unnamedWindows << " groups: foreground=" << counts[0]
+                       << " windowed=" << counts[1] << " other=" << counts[2];
+    if (counts[0] == 0)
+      qWarning() << "pause app choices: no foreground application, the foreground window is ours or unknown";
+    if (running.m_windowed.isEmpty())
+      qWarning() << "pause app choices: no application with a visible window was enumerated";
+  }
+#endif
 
   ui->cbPauseApp->setCurrentIndex(-1);
   ui->cbPauseApp->setEditText(QString());

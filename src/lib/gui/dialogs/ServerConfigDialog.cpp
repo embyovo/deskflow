@@ -27,6 +27,7 @@
 #include <QMessageBox>
 #include <QSet>
 #include <QStandardItemModel>
+#include <QStringList>
 
 #include <algorithm>
 
@@ -64,7 +65,6 @@ struct ProcessEnumeration
   int m_shellWindows = 0;
   int m_ownWindows = 0;
   int m_cloakedWindows = 0;
-  int m_helperWindows = 0;
   int m_unnamedWindows = 0;
   int m_captionlessWindows = 0;
 #endif
@@ -148,7 +148,6 @@ struct WindowScan
   int m_shell = 0;
   int m_own = 0;
   int m_cloaked = 0;
-  int m_helper = 0;
   int m_unnamed = 0;
   int m_captionless = 0;
 };
@@ -175,20 +174,14 @@ BOOL CALLBACK collectWindowedProcess(HWND window, LPARAM param)
     scan->m_shell++;
     return TRUE;
   }
-  if (isCloakedWindow(window)) {
-    scan->m_cloaked++;
-    return TRUE;
-  }
 
-  // Only tool windows without a caption are helper windows. A visible window whose caption cannot
-  // be read (elevated or a fragile cross process window) still counts as a window of the application.
-  if (GetWindowTextLengthW(window) == 0) {
+  // Cloaked and captionless windows are counted for the diagnostic only. A suspended UWP window,
+  // a window of another virtual desktop or a window whose caption cannot be read across processes
+  // still belongs to an application the user can see on the task bar, so it must not be dropped.
+  if (isCloakedWindow(window))
+    scan->m_cloaked++;
+  if (GetWindowTextLengthW(window) == 0)
     scan->m_captionless++;
-    if ((GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0) {
-      scan->m_helper++;
-      return TRUE;
-    }
-  }
 
   // The tool help name also covers processes that OpenProcess is not allowed to query.
   auto name = scan->m_namesById.value(processId);
@@ -203,7 +196,7 @@ BOOL CALLBACK collectWindowedProcess(HWND window, LPARAM param)
   return TRUE;
 }
 
-//! Executables that own a visible top level window, the task manager's applications group.
+//! Executables that own any visible top level window, the task manager's applications group.
 WindowScan scanWindows()
 {
   WindowScan scan;
@@ -282,7 +275,6 @@ ProcessEnumeration runningProcesses()
   result.m_shellWindows = scan.m_shell;
   result.m_ownWindows = scan.m_own;
   result.m_cloakedWindows = scan.m_cloaked;
-  result.m_helperWindows = scan.m_helper;
   result.m_unnamedWindows = scan.m_unnamed;
   result.m_captionlessWindows = scan.m_captionless;
   return result;
@@ -379,6 +371,8 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
   ui->cbPauseApp->setEditable(true);
   ui->cbPauseApp->setInsertPolicy(QComboBox::NoInsert);
   ui->cbPauseApp->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+  // Show a whole group at once instead of the first ten rows only, users took a short list as a missing app.
+  ui->cbPauseApp->setMaxVisibleItems(20);
   populatePauseAppChoices();
   initConnections();
 }
@@ -1120,13 +1114,15 @@ void ServerConfigDialog::populatePauseAppChoices()
 #ifdef Q_OS_WIN
   // Never hide an empty group silently. These numbers tell which step dropped an application.
   if (!running.m_processes.isEmpty()) {
+    QStringList windowedNames(running.m_windowed.cbegin(), running.m_windowed.cend());
+    windowedNames.sort(Qt::CaseInsensitive);
     qDebug().nospace() << "pause app choices: processes=" << running.m_processes.size()
                        << " windowed=" << running.m_windowed.size() << " windows=" << running.m_windows
                        << " hidden=" << running.m_hiddenWindows << " shell=" << running.m_shellWindows
                        << " own=" << running.m_ownWindows << " cloaked=" << running.m_cloakedWindows
-                       << " captionless=" << running.m_captionlessWindows << " helper=" << running.m_helperWindows
-                       << " unnamed=" << running.m_unnamedWindows << " groups: foreground=" << counts[0]
-                       << " windowed=" << counts[1] << " other=" << counts[2];
+                       << " captionless=" << running.m_captionlessWindows << " unnamed=" << running.m_unnamedWindows
+                       << " groups: foreground=" << counts[0] << " windowed=" << counts[1] << " other=" << counts[2];
+    qDebug().noquote() << "pause app choices windowed:" << windowedNames.join(QStringLiteral(", "));
     if (counts[0] == 0)
       qWarning() << "pause app choices: no foreground application, the foreground window is ours or unknown";
     if (running.m_windowed.isEmpty())

@@ -18,7 +18,9 @@
 #include "dialogs/HotkeyDialog.h"
 #include "gui/widgets/SettingsDialogButtonBox.h"
 
+#include <QCoreApplication>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QListWidgetItem>
 #include <QMessageBox>
 
@@ -883,7 +885,12 @@ void ServerConfigDialog::populatePauseAppChoices()
       processes.append(process);
   }
 
-  const auto foreground = foregroundProcessName();
+  // The window with focus is the settings dialog itself while it is open, so it never counts
+  // as the foreground application the user is interested in.
+  QString foreground = foregroundProcessName();
+  const auto ownName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
+  if (foreground.compare(ownName, Qt::CaseInsensitive) == 0)
+    foreground.clear();
 
   auto addChoice = [this](const RunningProcess &process, const QString &prefix) {
     const auto label = process.m_description.isEmpty()

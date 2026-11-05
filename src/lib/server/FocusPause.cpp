@@ -106,8 +106,8 @@ bool FocusPause::shouldPause(const ActiveAppInfo &app) const
   // chrome shows a window titled "video".  this runs only when focus changes
   // or the cursor reaches an edge, so it must not copy the title to compare it.
   return m_windowTitles.empty() || std::ranges::any_of(m_windowTitles, [&app](const auto &fragment) {
-    return containsIgnoreCase(app.m_windowTitle, fragment);
-  });
+           return containsIgnoreCase(app.m_windowTitle, fragment);
+         });
 }
 
 std::string FocusPause::processNameFromPath(const std::string &path)

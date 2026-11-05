@@ -163,7 +163,6 @@ QString foregroundProcessName()
 #endif
 } // namespace
 
-
 ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
     : QDialog(parent, Qt::WindowTitleHint | Qt::WindowSystemMenuHint),
       ui{std::make_unique<Ui::ServerConfigDialog>()},
@@ -786,7 +785,8 @@ bool ServerConfigDialog::isGeneralConfigDefault() const
          m_relativeMouseMoves == Settings::defaultValue(Settings::Server::RelativeMouseMoves).toBool() &&
          m_win32keepForeground == Settings::defaultValue(Settings::Server::Win32KeepForeground).toBool() &&
          m_disableLockToComputer == Settings::defaultValue(Settings::Server::DisableLockToComputer).toBool() &&
-         m_defaultLockToComputerState == Settings::defaultValue(Settings::Server::DefaultLockToComputerState).toBool() &&
+         m_defaultLockToComputerState ==
+             Settings::defaultValue(Settings::Server::DefaultLockToComputerState).toBool() &&
          m_pauseApps == Settings::defaultValue(Settings::Server::PauseOnFocusApps).toStringList() &&
          pauseTitles() == Settings::defaultValue(Settings::Server::PauseOnFocusTitles).toStringList();
 }

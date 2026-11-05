@@ -1763,9 +1763,9 @@ static bool isFullscreenWindow(HWND window, DWORD processId)
   // uncovered, so allow eight pixels on every side
   constexpr LONG tolerance = 8;
   return std::abs(bounds.left - monitorInfo.rcMonitor.left) <= tolerance &&
-      std::abs(bounds.top - monitorInfo.rcMonitor.top) <= tolerance &&
-      std::abs(bounds.right - monitorInfo.rcMonitor.right) <= tolerance &&
-      std::abs(bounds.bottom - monitorInfo.rcMonitor.bottom) <= tolerance;
+         std::abs(bounds.top - monitorInfo.rcMonitor.top) <= tolerance &&
+         std::abs(bounds.right - monitorInfo.rcMonitor.right) <= tolerance &&
+         std::abs(bounds.bottom - monitorInfo.rcMonitor.bottom) <= tolerance;
 }
 
 ActiveAppInfo MSWindowsComputer::getActiveApp() const
@@ -1783,9 +1783,8 @@ ActiveAppInfo MSWindowsComputer::getActiveApp() const
   const auto maxTitleLength = 512;
   wchar_t windowText[maxTitleLength];
   if (const int length = GetWindowTextW(window, windowText, maxTitleLength); length > 0) {
-    info.m_windowTitle = Unicode::UTF16ToUTF8(
-        std::string_view(reinterpret_cast<const char *>(windowText), length * sizeof(wchar_t))
-    );
+    info.m_windowTitle =
+        Unicode::UTF16ToUTF8(std::string_view(reinterpret_cast<const char *>(windowText), length * sizeof(wchar_t)));
   }
 
   DWORD processId = 0;

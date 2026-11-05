@@ -18,6 +18,7 @@
 #include "server/Config.h"
 #include "server/FocusPause.h"
 
+#include <atomic>
 #include <climits>
 #include <map>
 #include <set>
@@ -201,6 +202,9 @@ public:
   void getClients(std::vector<std::string> &list) const;
   void sendConnectedClientsIpc() const;
   size_t getMaximumClipboardSizeBytes() const;
+
+  //! Refresh the cached focus pause state, called by the foreground event hook
+  void updateFocusPause();
 
   //@}
 
@@ -477,4 +481,12 @@ private:
 
   // pause computer switching while a listed app has focus
   FocusPause m_focusPause;
+
+  // cached pause state, read once per mouse event on the fast path
+  std::atomic<bool> m_focusPauseActive = false;
+
+#ifdef _WIN32
+  //! foreground event hook, null when the hook is unavailable
+  void *m_focusHook = nullptr;
+#endif
 };

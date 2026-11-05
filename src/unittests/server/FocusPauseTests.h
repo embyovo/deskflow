@@ -19,6 +19,7 @@ private Q_SLOTS:
   void titleNarrowsMatch();
   void titleWithoutProcessNeverPauses();
   void unknownActiveAppNeverPauses();
+  void windowedAppNeverPauses();
   void staysPausedWhenSwitchingBetweenListedApps();
   void resumesAfterFocusLeaves();
 };

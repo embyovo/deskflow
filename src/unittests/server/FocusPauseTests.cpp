@@ -10,11 +10,19 @@
 
 using namespace deskflow::server;
 
+namespace {
+//! Most tests describe a full screen application, the only kind that pauses.
+ActiveAppInfo activeApp(std::string process, std::string title, bool fullscreen = true)
+{
+  return {std::move(process), std::move(title), fullscreen};
+}
+} // namespace
+
 void FocusPauseTests::emptyListNeverPauses()
 {
   FocusPause pause;
   QVERIFY(pause.isEmpty());
-  QVERIFY(!pause.shouldPause({"chrome.exe", "Google Chrome"}));
+  QVERIFY(!pause.shouldPause(activeApp("chrome.exe", "Google Chrome")));
 }
 
 void FocusPauseTests::matchesProcessName()
@@ -23,8 +31,8 @@ void FocusPauseTests::matchesProcessName()
   QVERIFY(!pause.isEmpty());
 
   // process names are compared without case
-  QVERIFY(pause.shouldPause({"Chrome.exe", "Google Chrome"}));
-  QVERIFY(!pause.shouldPause({"notepad.exe", "Untitled - Notepad"}));
+  QVERIFY(pause.shouldPause(activeApp("Chrome.exe", "Google Chrome")));
+  QVERIFY(!pause.shouldPause(activeApp("notepad.exe", "Untitled - Notepad")));
 }
 
 void FocusPauseTests::processNameFromPath()
@@ -38,26 +46,26 @@ void FocusPauseTests::ignoresBlankRules()
 {
   FocusPause pause({"", "  ", "notepad.exe"}, {"", "  "});
   QVERIFY(!pause.isEmpty());
-  QVERIFY(!pause.shouldPause({"chrome.exe", "Google Chrome"}));
-  QVERIFY(pause.shouldPause({"notepad.exe", "Untitled - Notepad"}));
+  QVERIFY(!pause.shouldPause(activeApp("chrome.exe", "Google Chrome")));
+  QVERIFY(pause.shouldPause(activeApp("notepad.exe", "Untitled - Notepad")));
 }
 
 void FocusPauseTests::titleNarrowsMatch()
 {
   FocusPause pause({"chrome.exe"}, {"youtube"});
-  QVERIFY(pause.shouldPause({"chrome.exe", "YouTube - Google Chrome"}));
-  QVERIFY(!pause.shouldPause({"chrome.exe", "Deskflow - Google Chrome"}));
+  QVERIFY(pause.shouldPause(activeApp("chrome.exe", "YouTube - Google Chrome")));
+  QVERIFY(!pause.shouldPause(activeApp("chrome.exe", "Deskflow - Google Chrome")));
 
   // any configured title fragment is enough
   FocusPause several({"chrome.exe"}, {"youtube", "netflix"});
-  QVERIFY(several.shouldPause({"chrome.exe", "Netflix - Google Chrome"}));
+  QVERIFY(several.shouldPause(activeApp("chrome.exe", "Netflix - Google Chrome")));
 }
 
 void FocusPauseTests::titleWithoutProcessNeverPauses()
 {
   FocusPause pause({}, {"youtube"});
   QVERIFY(pause.isEmpty());
-  QVERIFY(!pause.shouldPause({"chrome.exe", "YouTube - Google Chrome"}));
+  QVERIFY(!pause.shouldPause(activeApp("chrome.exe", "YouTube - Google Chrome")));
 }
 
 void FocusPauseTests::unknownActiveAppNeverPauses()
@@ -65,27 +73,37 @@ void FocusPauseTests::unknownActiveAppNeverPauses()
   // e.g. the desktop has focus or the platform does not report the app
   FocusPause pause({"chrome.exe"}, {});
   QVERIFY(!pause.shouldPause({}));
-  QVERIFY(!pause.shouldPause({"", ""}));
+  QVERIFY(!pause.shouldPause({"", "", true}));
+}
+
+void FocusPauseTests::windowedAppNeverPauses()
+{
+  FocusPause pause({"chrome.exe"}, {});
+  QVERIFY(!pause.shouldPause(activeApp("chrome.exe", "Google Chrome", false)));
+
+  // a title match does not change that
+  FocusPause titled({"chrome.exe"}, {"youtube"});
+  QVERIFY(!titled.shouldPause(activeApp("chrome.exe", "YouTube - Google Chrome", false)));
 }
 
 void FocusPauseTests::staysPausedWhenSwitchingBetweenListedApps()
 {
   FocusPause pause({"chrome.exe", "notepad.exe"}, {});
-  QVERIFY(pause.shouldPause({"chrome.exe", "Google Chrome"}));
-  QVERIFY(pause.shouldPause({"notepad.exe", "Untitled - Notepad"}));
+  QVERIFY(pause.shouldPause(activeApp("chrome.exe", "Google Chrome")));
+  QVERIFY(pause.shouldPause(activeApp("notepad.exe", "Untitled - Notepad")));
 }
 
 void FocusPauseTests::resumesAfterFocusLeaves()
 {
   FocusPause pause({"notepad.exe"}, {});
-  QVERIFY(pause.shouldPause({"notepad.exe", "Untitled - Notepad"}));
+  QVERIFY(pause.shouldPause(activeApp("notepad.exe", "Untitled - Notepad")));
 
   // focus returns to the desktop (explorer) or any other app: pause is over
-  QVERIFY(!pause.shouldPause({"explorer.exe", "Program Manager"}));
-  QVERIFY(!pause.shouldPause({"chrome.exe", "Google Chrome"}));
+  QVERIFY(!pause.shouldPause(activeApp("explorer.exe", "Program Manager")));
+  QVERIFY(!pause.shouldPause(activeApp("chrome.exe", "Google Chrome")));
 
   // and comes back as soon as the listed app is focused again
-  QVERIFY(pause.shouldPause({"notepad.exe", "Untitled - Notepad"}));
+  QVERIFY(pause.shouldPause(activeApp("notepad.exe", "Untitled - Notepad")));
 }
 
 QTEST_MAIN(FocusPauseTests)

@@ -77,17 +77,48 @@ is used right away and no manual restart is needed.
   the user could get stuck there.
 * Explicit switch hotkeys and "switch to computer" actions still work, so the
   user always has a way out of the paused application.
-* The focused application is only read when the cursor reaches the edge of the
-  primary screen and a switch is about to happen, and again when the switch
-  countdown fires. An idle mouse therefore costs nothing, and the decision is
-  taken at the moment of the switch instead of up to 200 ms earlier.
+* Only **full screen** applications pause switching, borderless full screen
+  included. A windowed or maximized application keeps switching normal, so a
+  windowed app can never trap the cursor on the primary screen.
+* Focus changes are watched with `SetWinEventHook(EVENT_SYSTEM_FOREGROUND,
+  WINEVENT_OUTOFCONTEXT)`, installed on the event queue thread next to the
+  server. The hook updates a cached boolean, which the mouse path reads once per
+  event, so a paused application costs a single boolean read per mouse event.
+  When the cursor reaches the edge of the primary screen the application is
+  checked again; that keeps switching correct even if the hook misses an event
+  (session switch, protected processes) or cannot be installed at all.
+* The pause ends as soon as the foreground changes away from the listed
+  application (the hook fires immediately, no polling interval), and no later
+  than the next edge check.
+
+## Full screen detection
+
+The foreground window is full screen when all of these hold
+(`isFullscreenWindow()` in `src/lib/platform/MSWindowsComputer.cpp`):
+
+* `GetWindowRect` is within **8 pixels** of the monitor rectangle returned by
+  `GetMonitorInfo` for `MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)`. The
+  tolerance covers DPI scaling and the invisible resize border, which leave a
+  few pixels uncovered even for a real full screen window.
+* The window does **not** have both `WS_CAPTION` and `WS_THICKFRAME`. A normal
+  maximized window keeps its caption and frame (and stops above the task bar,
+  because the maximized area is the monitor work area), so it is treated as
+  windowed. Borderless full screen games use `WS_POPUP` and pass.
+* The window is not the desktop (`Progman`, `WorkerW`), not the task bar
+  (`Shell_TrayWnd`, `Shell_SecondaryTrayWnd`) and not a Deskflow window
+  (same process id as the server).
+
+A maximized window that is only partly covered, for example because an
+always-on-top app bar takes space, is smaller than `rcMonitor` and therefore
+windowed.
 
 ## Platform support
 
 Only Windows is implemented. The foreground window is read with
 `GetForegroundWindow` + `GetWindowThreadProcessId`, the process image name with
-`QueryFullProcessImageNameW` and the window title with `GetWindowTextW`, all in
-`src/lib/platform/MSWindowsComputer.cpp`.
+`QueryFullProcessImageNameW`, the window title with `GetWindowTextW` and the
+full screen state with `GetWindowRect` + `MonitorFromWindow` + `GetMonitorInfo`,
+all in `src/lib/platform/MSWindowsComputer.cpp`.
 
 Other platforms inherit the default `IPlatformComputer::getActiveApp()` which
 returns an empty result, so nothing is ever paused there. Adding macOS or X11

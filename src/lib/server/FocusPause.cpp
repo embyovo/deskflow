@@ -89,6 +89,12 @@ bool FocusPause::shouldPause(const ActiveAppInfo &app) const
     return false;
   }
 
+  // only a full screen application pauses switching: a windowed one must not
+  // trap the cursor on the computer it runs on
+  if (!app.m_fullscreen) {
+    return false;
+  }
+
   const auto name = baseName(app.m_processName);
   const bool matches =
       std::ranges::any_of(m_processNames, [name](const auto &rule) { return equalsIgnoreCase(name, rule); });

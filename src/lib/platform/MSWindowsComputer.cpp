@@ -32,6 +32,7 @@
 #include <Shlobj.h>
 #include <algorithm>
 #include <comutil.h>
+#include <cstdlib>
 #include <string.h>
 #include <string_view>
 
@@ -1722,6 +1723,49 @@ std::string MSWindowsComputer::getSecureInputApp() const
 {
   // ignore on Windows
   return "";
+}
+
+//! True when the window covers its whole monitor, borderless full screen
+//! included.  Maximized and windowed windows never pause switching.
+static bool isFullscreenWindow(HWND window, DWORD processId)
+{
+  // the desktop, the task bar and our own windows are not full screen apps
+  if (processId == GetCurrentProcessId()) {
+    return false;
+  }
+  wchar_t className[64] = {};
+  if (GetClassNameW(window, className, 64) > 0) {
+    if (lstrcmpiW(className, L"Progman") == 0 || lstrcmpiW(className, L"WorkerW") == 0 ||
+        lstrcmpiW(className, L"Shell_TrayWnd") == 0 || lstrcmpiW(className, L"Shell_SecondaryTrayWnd") == 0) {
+      return false;
+    }
+  }
+
+  // a maximized window keeps its caption and thick frame and stops above the
+  // task bar, so it counts as windowed even though it fills the screen
+  const auto style = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE));
+  if ((style & WS_CAPTION) != 0 && (style & WS_THICKFRAME) != 0) {
+    return false;
+  }
+
+  MONITORINFO monitorInfo = {};
+  monitorInfo.cbSize = sizeof(monitorInfo);
+  if (!GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitorInfo)) {
+    return false;
+  }
+
+  RECT bounds = {};
+  if (!GetWindowRect(window, &bounds)) {
+    return false;
+  }
+
+  // DPI scaling and the invisible resize border can leave a few pixels
+  // uncovered, so allow eight pixels on every side
+  constexpr LONG tolerance = 8;
+  return std::abs(bounds.left - monitorInfo.rcMonitor.left) <= tolerance &&
+      std::abs(bounds.top - monitorInfo.rcMonitor.top) <= tolerance &&
+      std::abs(bounds.right - monitorInfo.rcMonitor.right) <= tolerance &&
+      std::abs(bounds.bottom - monitorInfo.rcMonitor.bottom) <= tolerance;
 }
 
 ActiveAppInfo MSWindowsComputer::getActiveApp() const

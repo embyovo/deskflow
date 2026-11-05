@@ -21,4 +21,12 @@ struct ActiveAppInfo
 
   //! Title of the focused top level window, in the original case
   std::string m_windowTitle;
+
+  //! True when the focused window covers its whole monitor
+  /*!
+  Only full screen applications pause switching, a windowed application must
+  never trap the cursor on the computer it runs on.  Platforms that can not
+  tell leave this false.
+  */
+  bool m_fullscreen = false;
 };

@@ -101,7 +101,6 @@ private:
   void restoreFromDefaults();
   void refreshPauseAppList();
   void populatePauseAppChoices();
-  QString friendlyAppLabel(const QString &app) const;
   QStringList pauseTitles() const;
   void setServerConfig();
   bool isGeneralConfigModified() const;

@@ -224,9 +224,6 @@ private:
   // the primary computer.
   bool isPauseActive() const;
 
-  // read the pause on focus settings
-  void loadPauseOnFocus();
-
   // check if the focused app pauses switching
   void handlePauseTimeout();
 

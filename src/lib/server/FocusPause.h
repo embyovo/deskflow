@@ -40,12 +40,6 @@ public:
   //! Reduce a path or name to a lower case executable file name
   static std::string processNameFromPath(const std::string &path);
 
-  //! Returns true if \p processName is in \p processNames
-  static bool matchesProcess(const std::string &processName, const std::set<std::string> &processNames);
-
-  //! Returns true if \p windowTitle contains one of \p windowTitles
-  static bool matchesTitle(const std::string &windowTitle, const std::vector<std::string> &windowTitles);
-
 private:
   static std::string toLowerAscii(const std::string &value);
   static std::string trim(const std::string &value);

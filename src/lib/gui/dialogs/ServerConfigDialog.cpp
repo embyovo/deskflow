@@ -61,12 +61,6 @@ QString processImagePath(DWORD processId)
   return path;
 }
 
-QString fileNameFromPath(const QString &path)
-{
-  const int separator = qMax(path.lastIndexOf(QLatin1Char('\\')), path.lastIndexOf(QLatin1Char('/')));
-  return path.mid(separator + 1);
-}
-
 //! The FileDescription shown by Task Manager, for example "Google Chrome".
 QString fileDescription(const QString &path)
 {
@@ -146,7 +140,9 @@ QString foregroundProcessName()
   if (GetWindowThreadProcessId(window, &processId) == 0 || processId == 0)
     return {};
 
-  return fileNameFromPath(processImagePath(processId));
+  const auto path = processImagePath(processId);
+  const int separator = qMax(path.lastIndexOf(QLatin1Char('\\')), path.lastIndexOf(QLatin1Char('/')));
+  return path.mid(separator + 1);
 }
 #else
 struct RunningProcess
@@ -852,7 +848,9 @@ void ServerConfigDialog::refreshPauseAppList()
 {
   ui->listPauseApps->clear();
   for (const auto &app : m_pauseApps) {
-    auto *item = new QListWidgetItem(friendlyAppLabel(app), ui->listPauseApps);
+    const auto description = m_appDescriptions.value(app.toLower());
+    const auto label = description.isEmpty() ? app : QStringLiteral("%1 (%2)").arg(description, app);
+    auto *item = new QListWidgetItem(label, ui->listPauseApps);
     // The configuration always stores the executable name, the label is only for the user.
     item->setData(Qt::UserRole, app);
     item->setToolTip(app);
@@ -923,12 +921,6 @@ void ServerConfigDialog::populatePauseAppChoices()
   ui->cbPauseApp->setCurrentIndex(-1);
   ui->cbPauseApp->setEditText(QString());
   refreshPauseAppList();
-}
-
-QString ServerConfigDialog::friendlyAppLabel(const QString &app) const
-{
-  const auto description = m_appDescriptions.value(app.toLower());
-  return description.isEmpty() ? app : QStringLiteral("%1 (%2)").arg(description, app);
 }
 
 QStringList ServerConfigDialog::pauseTitles() const

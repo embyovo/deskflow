@@ -405,30 +405,6 @@ bool Server::isPauseActive() const
   return m_focusPauseActive && m_active == m_primaryClient;
 }
 
-void Server::loadPauseOnFocus()
-{
-  const auto apps = Settings::value(Settings::Server::PauseOnFocusApps).toStringList();
-  const auto titles = Settings::value(Settings::Server::PauseOnFocusTitles).toStringList();
-
-  std::set<std::string> processNames;
-  for (const auto &app : apps) {
-    processNames.insert(app.toStdString());
-  }
-
-  std::vector<std::string> windowTitles;
-  for (const auto &title : titles) {
-    windowTitles.push_back(title.toStdString());
-  }
-
-  m_focusPause.setRules(std::move(processNames), std::move(windowTitles));
-  if (m_focusPause.isEmpty()) {
-    m_focusPauseActive = false;
-    return;
-  }
-
-  LOG_INFO("pausing switching while these applications have focus: %s", apps.join(", ").toStdString().c_str());
-}
-
 void Server::handlePauseTimeout()
 {
   if (m_focusPause.isEmpty()) {
@@ -1194,7 +1170,23 @@ void Server::processOptions()
 
   // the pause list lives in the application settings, so refresh it whenever
   // the server configuration is reloaded
-  loadPauseOnFocus();
+  const auto pauseApps = Settings::value(Settings::Server::PauseOnFocusApps).toStringList();
+  std::set<std::string> processNames;
+  for (const auto &app : pauseApps) {
+    processNames.insert(app.toStdString());
+  }
+
+  std::vector<std::string> windowTitles;
+  for (const auto &title : Settings::value(Settings::Server::PauseOnFocusTitles).toStringList()) {
+    windowTitles.push_back(title.toStdString());
+  }
+
+  m_focusPause.setRules(std::move(processNames), std::move(windowTitles));
+  if (m_focusPause.isEmpty()) {
+    m_focusPauseActive = false;
+  } else {
+    LOG_INFO("pausing switching while these applications have focus: %s", pauseApps.join(", ").toStdString().c_str());
+  }
 }
 
 void Server::handleShapeChanged(BaseClientProxy *client)

@@ -19,17 +19,152 @@
 #include "gui/widgets/SettingsDialogButtonBox.h"
 
 #include <QFileDialog>
+#include <QListWidgetItem>
 #include <QMessageBox>
+
+#include <algorithm>
 
 #ifdef Q_OS_WIN
 // clang-format off
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <winver.h>
 // clang-format on
+#include <cwchar>
+#include <vector>
 #endif
 
 using enum ComputerConfig::SwitchCorner;
+
+namespace {
+#ifdef Q_OS_WIN
+struct RunningProcess
+{
+  QString m_name;
+  QString m_description;
+};
+
+//! Full path of a process, or an empty string when it cannot be queried (protected or gone).
+QString processImagePath(DWORD processId)
+{
+  QString path;
+  if (const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId); process != nullptr) {
+    wchar_t buffer[1024];
+    DWORD length = 1024;
+    if (QueryFullProcessImageNameW(process, 0, buffer, &length) && length > 0)
+      path = QString::fromWCharArray(buffer, static_cast<int>(length));
+    CloseHandle(process);
+  }
+  return path;
+}
+
+QString fileNameFromPath(const QString &path)
+{
+  const int separator = qMax(path.lastIndexOf(QLatin1Char('\\')), path.lastIndexOf(QLatin1Char('/')));
+  return path.mid(separator + 1);
+}
+
+//! The FileDescription shown by Task Manager, for example "Google Chrome".
+QString fileDescription(const QString &path)
+{
+  if (path.isEmpty())
+    return {};
+
+  DWORD ignored = 0;
+  const auto size = GetFileVersionInfoSizeW(reinterpret_cast<LPCWSTR>(path.utf16()), &ignored);
+  if (size == 0)
+    return {};
+
+  std::vector<BYTE> versionInfo(size);
+  if (!GetFileVersionInfoW(reinterpret_cast<LPCWSTR>(path.utf16()), 0, size, versionInfo.data()))
+    return {};
+
+  struct Translation
+  {
+    WORD m_language;
+    WORD m_codePage;
+  };
+  LPVOID translations = nullptr;
+  UINT translationLength = 0;
+  if (!VerQueryValueW(versionInfo.data(), L"\\VarFileInfo\\Translation", &translations, &translationLength) ||
+      translationLength < sizeof(Translation))
+    return {};
+
+  const auto *translation = static_cast<const Translation *>(translations);
+  wchar_t key[64];
+  std::swprintf(
+      key, std::size(key), L"\\StringFileInfo\\%04x%04x\\FileDescription", translation->m_language,
+      translation->m_codePage
+  );
+  wchar_t *text = nullptr;
+  UINT textLength = 0;
+  if (!VerQueryValueW(versionInfo.data(), key, reinterpret_cast<void **>(&text), &textLength) || textLength == 0)
+    return {};
+
+  return QString::fromWCharArray(text).trimmed();
+}
+
+QList<RunningProcess> runningProcesses()
+{
+  QList<RunningProcess> processes;
+  const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE)
+    return processes;
+
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  if (Process32FirstW(snapshot, &entry)) {
+    do {
+      RunningProcess process;
+      process.m_name = QString::fromWCharArray(entry.szExeFile);
+      if (process.m_name.isEmpty())
+        continue;
+      process.m_description = fileDescription(processImagePath(entry.th32ProcessID));
+      processes.append(process);
+    } while (Process32NextW(snapshot, &entry));
+  }
+  CloseHandle(snapshot);
+  return processes;
+}
+
+//! The executable that owns the foreground window.
+/*!
+ * The GUI runs in its own process and cannot reach the computer object of the
+ * server, so the platform hook used by the server is not available here. Keep
+ * this Windows only; other platforms simply offer the manual input.
+ */
+QString foregroundProcessName()
+{
+  const HWND window = GetForegroundWindow();
+  if (window == nullptr)
+    return {};
+
+  DWORD processId = 0;
+  if (GetWindowThreadProcessId(window, &processId) == 0 || processId == 0)
+    return {};
+
+  return fileNameFromPath(processImagePath(processId));
+}
+#else
+struct RunningProcess
+{
+  QString m_name;
+  QString m_description;
+};
+
+QList<RunningProcess> runningProcesses()
+{
+  return {};
+}
+
+QString foregroundProcessName()
+{
+  return {};
+}
+#endif
+} // namespace
+
 
 ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
     : QDialog(parent, Qt::WindowTitleHint | Qt::WindowSystemMenuHint),
@@ -59,7 +194,7 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
   ui->cbPauseApp->setEditable(true);
   ui->cbPauseApp->setInsertPolicy(QComboBox::NoInsert);
   ui->cbPauseApp->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-  ui->cbPauseApp->addItems(runningProcessNames());
+  populatePauseAppChoices();
   initConnections();
 }
 
@@ -668,7 +803,13 @@ void ServerConfigDialog::setButtonBoxEnabledButtons() const
 
 void ServerConfigDialog::addPauseApp()
 {
-  const auto appName = ui->cbPauseApp->currentText().trimmed();
+  const auto index = ui->cbPauseApp->currentIndex();
+  QString appName;
+  if (index >= 0 && ui->cbPauseApp->currentText() == ui->cbPauseApp->itemText(index))
+    appName = ui->cbPauseApp->itemData(index).toString();
+  else
+    appName = ui->cbPauseApp->currentText().trimmed();
+
   if (appName.isEmpty())
     return;
 
@@ -690,7 +831,7 @@ void ServerConfigDialog::removePauseApp()
     return;
 
   for (const auto *item : selectedItems)
-    m_pauseApps.removeAll(item->text());
+    m_pauseApps.removeAll(item->data(Qt::UserRole).toString());
   refreshPauseAppList();
   setButtonBoxEnabledButtons();
 }
@@ -708,11 +849,79 @@ void ServerConfigDialog::clearPauseApps()
 void ServerConfigDialog::refreshPauseAppList()
 {
   ui->listPauseApps->clear();
-  ui->listPauseApps->addItems(m_pauseApps);
+  for (const auto &app : m_pauseApps) {
+    auto *item = new QListWidgetItem(friendlyAppLabel(app), ui->listPauseApps);
+    // The configuration always stores the executable name, the label is only for the user.
+    item->setData(Qt::UserRole, app);
+    item->setToolTip(app);
+  }
 
   const bool writable = Settings::isWritable();
   ui->btnRemovePauseApp->setEnabled(writable && !m_pauseApps.isEmpty());
   ui->btnClearPauseApps->setEnabled(writable && !m_pauseApps.isEmpty());
+}
+
+void ServerConfigDialog::populatePauseAppChoices()
+{
+  ui->cbPauseApp->clear();
+  m_appDescriptions.clear();
+
+  QList<RunningProcess> processes;
+  for (const auto &process : runningProcesses()) {
+    const auto key = process.m_name.toLower();
+    if (!m_appDescriptions.contains(key) || m_appDescriptions.value(key).isEmpty())
+      m_appDescriptions.insert(key, process.m_description);
+
+    bool known = false;
+    for (const auto &seen : processes) {
+      if (seen.m_name.compare(process.m_name, Qt::CaseInsensitive) == 0) {
+        known = true;
+        break;
+      }
+    }
+    if (!known)
+      processes.append(process);
+  }
+
+  const auto foreground = foregroundProcessName();
+
+  auto addChoice = [this](const RunningProcess &process, const QString &prefix) {
+    const auto label = process.m_description.isEmpty()
+                           ? process.m_name
+                           : QStringLiteral("%1 (%2)").arg(process.m_description, process.m_name);
+    ui->cbPauseApp->addItem(prefix.isEmpty() ? label : QStringLiteral("%1 %2").arg(prefix, label), process.m_name);
+  };
+
+  // Like the task manager, the application that has focus is listed first, the rest is sorted by name.
+  const bool hasForeground = !foreground.isEmpty();
+  if (hasForeground) {
+    for (const auto &process : processes) {
+      if (process.m_name.compare(foreground, Qt::CaseInsensitive) == 0) {
+        addChoice(process, tr("(current foreground)"));
+        break;
+      }
+    }
+  }
+
+  std::sort(processes.begin(), processes.end(), [](const RunningProcess &left, const RunningProcess &right) {
+    return left.m_name.compare(right.m_name, Qt::CaseInsensitive) < 0;
+  });
+
+  for (const auto &process : processes) {
+    if (hasForeground && process.m_name.compare(foreground, Qt::CaseInsensitive) == 0)
+      continue;
+    addChoice(process, QString());
+  }
+
+  ui->cbPauseApp->setCurrentIndex(-1);
+  ui->cbPauseApp->setEditText(QString());
+  refreshPauseAppList();
+}
+
+QString ServerConfigDialog::friendlyAppLabel(const QString &app) const
+{
+  const auto description = m_appDescriptions.value(app.toLower());
+  return description.isEmpty() ? app : QStringLiteral("%1 (%2)").arg(description, app);
 }
 
 QStringList ServerConfigDialog::pauseTitles() const
@@ -724,27 +933,4 @@ QStringList ServerConfigDialog::pauseTitles() const
       titles.append(title);
   }
   return titles;
-}
-
-QStringList ServerConfigDialog::runningProcessNames()
-{
-  QStringList names;
-#ifdef Q_OS_WIN
-  const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  if (snapshot == INVALID_HANDLE_VALUE)
-    return names;
-
-  PROCESSENTRY32W entry;
-  entry.dwSize = sizeof(entry);
-  if (Process32FirstW(snapshot, &entry)) {
-    do {
-      const auto name = QString::fromWCharArray(entry.szExeFile);
-      if (!name.isEmpty() && !names.contains(name, Qt::CaseInsensitive))
-        names.append(name);
-    } while (Process32NextW(snapshot, &entry));
-  }
-  CloseHandle(snapshot);
-  names.sort(Qt::CaseInsensitive);
-#endif
-  return names;
 }

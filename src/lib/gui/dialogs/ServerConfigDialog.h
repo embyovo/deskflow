@@ -13,6 +13,7 @@
 #include "config/ServerConfig.h"
 
 #include <QDialog>
+#include <QHash>
 #include <QStringList>
 
 class SettingsDialogButtonBox;
@@ -99,8 +100,9 @@ private:
   void updateControls() const;
   void restoreFromDefaults();
   void refreshPauseAppList();
+  void populatePauseAppChoices();
+  QString friendlyAppLabel(const QString &app) const;
   QStringList pauseTitles() const;
-  static QStringList runningProcessNames();
   void setServerConfig();
   bool isGeneralConfigModified() const;
   bool isGeneralConfigDefault() const;
@@ -126,6 +128,8 @@ private:
   bool m_defaultLockToComputerState;
   QString m_originalServerConfigUsesExternalFile;
   QStringList m_pauseApps;
+  // Executable name (lower case) to the description taken from the executable version info.
+  QHash<QString, QString> m_appDescriptions;
   ServerConfig m_serverConfig;
   ComputerSetupModel m_computerSetupModel;
   SettingsDialogButtonBox *m_buttonBox = nullptr;

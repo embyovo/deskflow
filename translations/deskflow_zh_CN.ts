@@ -1102,6 +1102,50 @@ Enabling this setting will disable the server config GUI.</source>
         <source>Enable lock to computer at startup</source>
         <translation type="unfinished">启动时启用锁定到计算机</translation>
     </message>
+    <message>
+        <source>&amp;Pause switching on focus</source>
+        <translation>聚焦指定程序时暂停切换(&amp;P)</translation>
+    </message>
+    <message>
+        <source>Switching and input forwarding pause while one of these applications has focus. Applications are matched by executable name, ignoring case.</source>
+        <translation>当以下任一程序获得焦点时，暂停屏幕切换与输入转发。程序按可执行文件名匹配，不区分大小写。</translation>
+    </message>
+    <message>
+        <source>Pick a running application or type an executable name, e.g. chrome.exe</source>
+        <translation>从正在运行的程序中选择，或直接输入可执行文件名，例如 chrome.exe</translation>
+    </message>
+    <message>
+        <source>&amp;Add</source>
+        <translation>添加(&amp;A)</translation>
+    </message>
+    <message>
+        <source>&amp;Remove</source>
+        <translation>移除(&amp;R)</translation>
+    </message>
+    <message>
+        <source>C&amp;lear</source>
+        <translation>清空(&amp;L)</translation>
+    </message>
+    <message>
+        <source>Only when the window title contains:</source>
+        <translation>仅当窗口标题包含：</translation>
+    </message>
+    <message>
+        <source>Optional. Comma separated fragments, e.g. YouTube, Visual Studio</source>
+        <translation>可选。以逗号分隔的标题片段，例如 YouTube、Visual Studio</translation>
+    </message>
+    <message>
+        <source>Optional, comma separated</source>
+        <translation>可选，逗号分隔</translation>
+    </message>
+    <message>
+        <source>Saving restarts the server, so the list is used right away.</source>
+        <translation>保存后会重启服务器，名单立即生效。</translation>
+    </message>
+    <message>
+        <source>(current foreground)</source>
+        <translation>（当前前台）</translation>
+    </message>
 </context>
 <context>
     <name>SettingsDialog</name>

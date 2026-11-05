@@ -1119,10 +1119,6 @@ Enabling this setting will disable the server config GUI.</source>
         <translation>添加(&amp;A)</translation>
     </message>
     <message>
-        <source>&amp;Remove</source>
-        <translation>移除(&amp;R)</translation>
-    </message>
-    <message>
         <source>C&amp;lear</source>
         <translation>清空(&amp;L)</translation>
     </message>

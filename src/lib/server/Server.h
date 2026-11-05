@@ -224,9 +224,6 @@ private:
   // the primary computer.
   bool isPauseActive() const;
 
-  // check if the focused app pauses switching
-  void handlePauseTimeout();
-
   // returns the jump zone of the client
   int32_t getJumpZoneSize(const BaseClientProxy *) const;
 
@@ -480,6 +477,4 @@ private:
 
   // pause computer switching while a listed app has focus
   FocusPause m_focusPause;
-  bool m_focusPauseActive = false;
-  EventQueueTimer *m_focusPauseTimer = nullptr;
 };

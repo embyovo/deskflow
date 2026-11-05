@@ -37,9 +37,6 @@
 
 using namespace deskflow::server;
 
-// how often the focused application is checked while a pause list is set
-static constexpr double s_pauseCheckInterval = 0.2;
-
 //
 // Server
 //
@@ -130,11 +127,6 @@ Server::Server(ServerConfig &config, PrimaryClient *primaryClient, deskflow::Com
   // set initial configuration
   setConfig(config);
 
-  // watch the focused application so switching can be paused, the focus
-  // object is used as the timer target to keep it apart from the switch timer
-  m_events->addHandler(EventTypes::Timer, &m_focusPause, [this](const auto &) { handlePauseTimeout(); });
-  m_focusPauseTimer = m_events->newTimer(s_pauseCheckInterval, &m_focusPause);
-
   // If we are using libportal, we need to set the primary client first.
   // This enables the rules of the primary client. The hotkeys are then enabled in EiComputer.cpp after the rules
   // registered them.
@@ -176,8 +168,6 @@ Server::~Server()
   m_events->removeHandler(PrimaryComputerFakeInputBegin, m_inputFilter);
   m_events->removeHandler(PrimaryComputerFakeInputEnd, m_inputFilter);
   m_events->removeHandler(Timer, this);
-  m_events->removeHandler(Timer, &m_focusPause);
-  m_events->deleteTimer(m_focusPauseTimer);
   stopSwitch();
 
   try {
@@ -402,26 +392,13 @@ bool Server::isPauseActive() const
   // only pause while the user is on the primary computer.  if the mouse is on
   // a secondary computer, its foreground application is unrelated and input
   // must keep being forwarded, otherwise the user would get stuck there.
-  return m_focusPauseActive && m_active == m_primaryClient;
-}
-
-void Server::handlePauseTimeout()
-{
-  if (m_focusPause.isEmpty()) {
-    return;
+  if (m_active != m_primaryClient || m_focusPause.isEmpty()) {
+    return false;
   }
 
-  const auto app = m_computer->getActiveApp();
-  if (const bool paused = m_focusPause.shouldPause(app); paused != m_focusPauseActive) {
-    m_focusPauseActive = paused;
-    if (paused) {
-      // never let a switch that is already counting down go through
-      stopSwitch();
-      LOG_INFO("paused switching, \"%s\" (%s) has focus", app.m_windowTitle.c_str(), app.m_processName.c_str());
-    } else {
-      LOG_INFO("resumed switching");
-    }
-  }
+  // this is evaluated when the cursor is about to leave the primary computer,
+  // not on a timer, so a mouse that is not crossing an edge costs nothing.
+  return m_focusPause.shouldPause(m_computer->getActiveApp());
 }
 
 int32_t Server::getJumpZoneSize(const BaseClientProxy *client) const
@@ -1182,9 +1159,7 @@ void Server::processOptions()
   }
 
   m_focusPause.setRules(std::move(processNames), std::move(windowTitles));
-  if (m_focusPause.isEmpty()) {
-    m_focusPauseActive = false;
-  } else {
+  if (!m_focusPause.isEmpty()) {
     LOG_INFO("pausing switching while these applications have focus: %s", pauseApps.join(", ").toStdString().c_str());
   }
 }
@@ -1717,14 +1692,6 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
     yc = ay + ah - 1;
   }
 
-  // the focused application is on the pause list: stay on this computer.  the
-  // cursor position was saved above so switching resumes from wherever the
-  // mouse is once the pause is over.
-  if (isPauseActive()) {
-    stopSwitch();
-    return false;
-  }
-
   // see if we should change computers
   // when the cursor is in a corner, there may be a computer either
   // horizontally or vertically.  check both directions.
@@ -1750,6 +1717,15 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
   if (dirh == NoDirection && dirv == NoDirection) {
     // still on local computer
     noSwitch(x, y);
+    return false;
+  }
+
+  // the focused application pauses switching.  this is only reached when the
+  // cursor is in the jump zone, and it runs before any countdown is started,
+  // so the cursor simply stays at the edge and an idle mouse costs nothing.
+  if (isPauseActive()) {
+    LOG_VERBOSE("focused application paused switching");
+    stopSwitch();
     return false;
   }
 

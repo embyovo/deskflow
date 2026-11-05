@@ -77,8 +77,10 @@ is used right away and no manual restart is needed.
   the user could get stuck there.
 * Explicit switch hotkeys and "switch to computer" actions still work, so the
   user always has a way out of the paused application.
-* Focus changes are polled every 200 ms, which is the worst case delay before
-  switching is paused or restored.
+* The focused application is only read when the cursor reaches the edge of the
+  primary screen and a switch is about to happen, and again when the switch
+  countdown fires. An idle mouse therefore costs nothing, and the decision is
+  taken at the moment of the switch instead of up to 200 ms earlier.
 
 ## Platform support
 

@@ -16,12 +16,379 @@
 #include "dialogs/ActionDialog.h"
 #include "dialogs/ComputerSettingsDialog.h"
 #include "dialogs/HotkeyDialog.h"
+#include "dialogs/PauseAppChoices.h"
 #include "gui/widgets/SettingsDialogButtonBox.h"
 
+#include <QCoreApplication>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QHash>
+#include <QListWidgetItem>
 #include <QMessageBox>
+#include <QSet>
+#include <QStandardItemModel>
+#include <QStringList>
+
+#include <algorithm>
+
+#ifdef Q_OS_WIN
+// clang-format off
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <dwmapi.h>
+#include <TlHelp32.h>
+#include <winver.h>
+// clang-format on
+#include <cwchar>
+#include <vector>
+#endif
 
 using enum ComputerConfig::SwitchCorner;
+
+namespace {
+struct RunningProcess
+{
+  QString m_name;
+  QString m_description;
+  //! 0 = visible and not minimized, 1 = minimized or hidden, 2 = no top level window
+  int m_group = 2;
+};
+
+//! Everything the pause application list needs, plus the numbers used by its diagnostic.
+struct ProcessEnumeration
+{
+  QList<RunningProcess> m_processes;
+#ifdef Q_OS_WIN
+  QSet<QString> m_foregroundApps;
+  QSet<QString> m_backgroundApps;
+  int m_windows = 0;
+  int m_hiddenWindows = 0;
+  int m_shellWindows = 0;
+  int m_ownWindows = 0;
+  int m_cloakedWindows = 0;
+  int m_hostWindows = 0;
+  int m_helperWindows = 0;
+  int m_unnamedWindows = 0;
+  int m_ignoredWindows = 0;
+#endif
+};
+
+#ifdef Q_OS_WIN
+
+//! Full path of a process, or an empty string when it cannot be queried (protected or gone).
+QString processImagePath(DWORD processId)
+{
+  QString path;
+  if (const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId); process != nullptr) {
+    wchar_t buffer[1024];
+    DWORD length = 1024;
+    if (QueryFullProcessImageNameW(process, 0, buffer, &length) && length > 0)
+      path = QString::fromWCharArray(buffer, static_cast<int>(length));
+    CloseHandle(process);
+  }
+  return path;
+}
+
+QString executableNameFromPath(const QString &path)
+{
+  const int separator = qMax(path.lastIndexOf(QLatin1Char('\\')), path.lastIndexOf(QLatin1Char('/')));
+  return path.mid(separator + 1);
+}
+
+//! Process names by id from one tool help snapshot; independent of OpenProcess rights.
+QHash<DWORD, QString> processNamesById()
+{
+  QHash<DWORD, QString> names;
+  const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE)
+    return names;
+
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  if (Process32FirstW(snapshot, &entry)) {
+    do {
+      const auto name = QString::fromWCharArray(entry.szExeFile);
+      if (!name.isEmpty())
+        names.insert(entry.th32ProcessID, name);
+    } while (Process32NextW(snapshot, &entry));
+  }
+  CloseHandle(snapshot);
+  return names;
+}
+
+QString windowClassName(HWND window)
+{
+  wchar_t className[64] = {};
+  if (GetClassNameW(window, className, static_cast<int>(std::size(className))) <= 0)
+    return {};
+  return QString::fromWCharArray(className);
+}
+
+//! The desktop, the task bar and their helper windows are not applications.
+bool isShellWindow(HWND window)
+{
+  const auto className = windowClassName(window);
+  return className.compare(QLatin1String("Progman"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("WorkerW"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("Shell_TrayWnd"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("Shell_SecondaryTrayWnd"), Qt::CaseInsensitive) == 0;
+}
+
+//! Suspended UWP windows and windows of another virtual desktop stay visible but are cloaked.
+bool isCloakedWindow(HWND window)
+{
+  constexpr DWORD kDwmwaCloaked = 14;
+  DWORD cloaked = 0;
+  return SUCCEEDED(DwmGetWindowAttribute(window, kDwmwaCloaked, &cloaked, sizeof(cloaked))) && cloaked != 0;
+}
+
+//! Input method, GDI+ and DWM helper windows are never the window of an application.
+bool isHelperWindowClass(const QString &className)
+{
+  return className.compare(QLatin1String("IME"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("MSCTFIME UI"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("GDI+ Hook Window Class"), Qt::CaseInsensitive) == 0 ||
+         className.compare(QLatin1String("Dwm"), Qt::CaseInsensitive) == 0;
+}
+
+struct WindowScan
+{
+  QHash<DWORD, QString> m_namesById;
+  //! Visible, not minimized and not cloaked: the applications the task bar shows
+  QSet<QString> m_foregroundApps;
+  //! Minimized, cloaked, or a hidden main window: every other application with a window
+  QSet<QString> m_backgroundApps;
+  int m_windows = 0;
+  int m_hidden = 0;
+  int m_shell = 0;
+  int m_own = 0;
+  int m_cloaked = 0;
+  int m_host = 0;
+  int m_helper = 0;
+  int m_unnamed = 0;
+  int m_ignored = 0;
+};
+
+BOOL CALLBACK collectWindowedProcess(HWND window, LPARAM param)
+{
+  auto *scan = reinterpret_cast<WindowScan *>(param);
+  scan->m_windows++;
+
+  DWORD processId = 0;
+  if (GetWindowThreadProcessId(window, &processId) == 0 || processId == 0) {
+    scan->m_unnamed++;
+    return TRUE;
+  }
+  if (processId == GetCurrentProcessId()) {
+    scan->m_own++;
+    return TRUE;
+  }
+  const auto className = windowClassName(window);
+  if (isShellWindow(window)) {
+    scan->m_shell++;
+    return TRUE;
+  }
+  // An UWP application lives in a frame window owned by ApplicationFrameHost.exe, the application
+  // itself owns the CoreWindow inside it and is grouped under its own executable.
+  if (className.compare(QLatin1String("ApplicationFrameWindow"), Qt::CaseInsensitive) == 0) {
+    scan->m_host++;
+    return TRUE;
+  }
+  if (isHelperWindowClass(className)) {
+    scan->m_helper++;
+    return TRUE;
+  }
+
+  // The tool help name also covers processes that OpenProcess is not allowed to query.
+  auto name = scan->m_namesById.value(processId);
+  if (name.isEmpty()) {
+    name = executableNameFromPath(processImagePath(processId));
+    if (name.isEmpty()) {
+      scan->m_unnamed++;
+      return TRUE;
+    }
+  }
+  const auto key = name.toLower();
+
+  const bool visible = IsWindowVisible(window) != FALSE;
+  const bool minimized = IsIconic(window) != FALSE;
+  const bool cloaked = isCloakedWindow(window);
+  const bool captioned = GetWindowTextLengthW(window) > 0;
+  const bool owned = GetWindow(window, GW_OWNER) != nullptr;
+  const bool toolWindow = (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0;
+  if (!visible)
+    scan->m_hidden++;
+  if (cloaked)
+    scan->m_cloaked++;
+
+  if (visible && !minimized && !cloaked) {
+    scan->m_foregroundApps.insert(key);
+    return TRUE;
+  }
+
+  // A minimized window is still visible, so it stays an application. A hidden window only counts
+  // when it can be the main window of the application: captioned, without an owner, without the
+  // tool window style. Tray message windows and service windows are owned or tool windows.
+  if (visible || (captioned && !owned && !toolWindow)) {
+    scan->m_backgroundApps.insert(key);
+    return TRUE;
+  }
+
+  scan->m_ignored++;
+  return TRUE;
+}
+
+//! Applications that own a top level window, split by whether the window is visible and not minimized.
+WindowScan scanWindows()
+{
+  WindowScan scan;
+  scan.m_namesById = processNamesById();
+  EnumWindows(collectWindowedProcess, reinterpret_cast<LPARAM>(&scan));
+  return scan;
+}
+
+//! The FileDescription shown by Task Manager, for example "Google Chrome".
+QString fileDescription(const QString &path)
+{
+  if (path.isEmpty())
+    return {};
+
+  DWORD ignored = 0;
+  const auto size = GetFileVersionInfoSizeW(reinterpret_cast<LPCWSTR>(path.utf16()), &ignored);
+  if (size == 0)
+    return {};
+
+  std::vector<BYTE> versionInfo(size);
+  if (!GetFileVersionInfoW(reinterpret_cast<LPCWSTR>(path.utf16()), 0, size, versionInfo.data()))
+    return {};
+
+  struct Translation
+  {
+    WORD m_language;
+    WORD m_codePage;
+  };
+  LPVOID translations = nullptr;
+  UINT translationLength = 0;
+  if (!VerQueryValueW(versionInfo.data(), L"\\VarFileInfo\\Translation", &translations, &translationLength) ||
+      translationLength < sizeof(Translation))
+    return {};
+
+  const auto *translation = static_cast<const Translation *>(translations);
+  wchar_t key[64];
+  std::swprintf(
+      key, std::size(key), L"\\StringFileInfo\\%04x%04x\\FileDescription", translation->m_language,
+      translation->m_codePage
+  );
+  wchar_t *text = nullptr;
+  UINT textLength = 0;
+  if (!VerQueryValueW(versionInfo.data(), key, reinterpret_cast<void **>(&text), &textLength) || textLength == 0)
+    return {};
+
+  return QString::fromWCharArray(text).trimmed();
+}
+
+ProcessEnumeration runningProcesses()
+{
+  ProcessEnumeration result;
+  const auto scan = scanWindows();
+
+  const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE)
+    return result;
+
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  if (Process32FirstW(snapshot, &entry)) {
+    do {
+      RunningProcess process;
+      process.m_name = QString::fromWCharArray(entry.szExeFile);
+      if (process.m_name.isEmpty())
+        continue;
+      process.m_description = fileDescription(processImagePath(entry.th32ProcessID));
+      const auto key = process.m_name.toLower();
+      process.m_group =
+          deskflow::gui::pauseAppGroup(scan.m_foregroundApps.contains(key), scan.m_backgroundApps.contains(key));
+      result.m_processes.append(process);
+    } while (Process32NextW(snapshot, &entry));
+  }
+  CloseHandle(snapshot);
+
+  result.m_foregroundApps = scan.m_foregroundApps;
+  result.m_backgroundApps = scan.m_backgroundApps;
+  result.m_windows = scan.m_windows;
+  result.m_hiddenWindows = scan.m_hidden;
+  result.m_shellWindows = scan.m_shell;
+  result.m_ownWindows = scan.m_own;
+  result.m_cloakedWindows = scan.m_cloaked;
+  result.m_hostWindows = scan.m_host;
+  result.m_helperWindows = scan.m_helper;
+  result.m_unnamedWindows = scan.m_unnamed;
+  result.m_ignoredWindows = scan.m_ignored;
+  return result;
+}
+
+//! The executable that owns the foreground window.
+/*!
+ * The GUI runs in its own process and cannot reach the computer object of the
+ * server, so the platform hook used by the server is not available here. Keep
+ * this Windows only; other platforms simply offer the manual input.
+ */
+QString foregroundProcessName()
+{
+  const HWND window = GetForegroundWindow();
+  // A task bar menu is not the application the user works in, fall back to the z order instead.
+  if (window == nullptr || isShellWindow(window))
+    return {};
+
+  DWORD processId = 0;
+  if (GetWindowThreadProcessId(window, &processId) == 0 || processId == 0)
+    return {};
+
+  const auto name = processNamesById().value(processId);
+  return name.isEmpty() ? executableNameFromPath(processImagePath(processId)) : name;
+}
+
+//! The application the user was working in before our own dialog took the foreground.
+/*!
+ * GetForegroundWindow returns our own settings dialog while it is open, so walking the z order is
+ * the only way to find the application the user came from. Topmost and no activate windows are
+ * overlays or helpers, never that application.
+ */
+QString recentForegroundProcessName()
+{
+  const auto namesById = processNamesById();
+  HWND window = GetTopWindow(nullptr);
+  for (int guard = 0; window != nullptr && guard < 1024; ++guard) {
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    const auto exStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    if (processId != 0 && processId != GetCurrentProcessId() && IsWindowVisible(window) &&
+        GetWindowTextLengthW(window) > 0 && (exStyle & (WS_EX_TOPMOST | WS_EX_NOACTIVATE)) == 0 &&
+        !isShellWindow(window) && !isCloakedWindow(window)) {
+      if (const auto name = namesById.value(processId); !name.isEmpty())
+        return name;
+    }
+    window = GetWindow(window, GW_HWNDNEXT);
+  }
+  return {};
+}
+#else
+ProcessEnumeration runningProcesses()
+{
+  return {};
+}
+
+QString foregroundProcessName()
+{
+  return {};
+}
+
+QString recentForegroundProcessName()
+{
+  return {};
+}
+#endif
+} // namespace
 
 ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
     : QDialog(parent, Qt::WindowTitleHint | Qt::WindowSystemMenuHint),
@@ -48,6 +415,12 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
 
   if (!deskflow::platform::isWindows())
     ui->cbWin32KeepForeground->setVisible(false);
+  ui->cbPauseApp->setEditable(true);
+  ui->cbPauseApp->setInsertPolicy(QComboBox::NoInsert);
+  ui->cbPauseApp->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+  // Show a whole group at once instead of the first ten rows only, users took a short list as a missing app.
+  ui->cbPauseApp->setMaxVisibleItems(20);
+  populatePauseAppChoices();
   initConnections();
 }
 
@@ -92,6 +465,8 @@ void ServerConfigDialog::save()
   Settings::setValue(Settings::Server::Win32KeepForeground, m_win32keepForeground);
   Settings::setValue(Settings::Server::ExternalConfig, ui->groupExternalConfig->isChecked());
   Settings::setValue(Settings::Server::ExternalConfigFile, ui->lineConfigFile->text());
+  Settings::setValue(Settings::Server::PauseOnFocusApps, m_pauseApps);
+  Settings::setValue(Settings::Server::PauseOnFocusTitles, pauseTitles());
 
   QStringList computerNames;
   const auto computerList = m_computerSetupModel.m_computers;
@@ -400,6 +775,8 @@ void ServerConfigDialog::loadFromConfig()
   m_disableLockToComputer = Settings::value(Settings::Server::DisableLockToComputer).toBool();
   m_enableClipboard = Settings::value(Settings::Server::EnableClipboard).toBool();
   m_clipboardSize = Settings::value(Settings::Server::ClipboardSize).toUInt();
+  m_pauseApps = Settings::value(Settings::Server::PauseOnFocusApps).toStringList();
+  ui->linePauseTitles->setText(Settings::value(Settings::Server::PauseOnFocusTitles).toStringList().join(", "));
 
   ui->lineConfigFile->setText(serverConfig().configFile());
   ui->groupExternalConfig->setChecked(serverConfig().useExternalConfig());
@@ -461,6 +838,7 @@ void ServerConfigDialog::refreshControls()
   ui->cbEnableClipboard->setChecked(m_enableClipboard);
   ui->sbClipboardSizeLimit->setEnabled(m_enableClipboard);
   ui->sbClipboardSizeLimit->setValue(m_clipboardSize);
+  refreshPauseAppList();
 }
 
 void ServerConfigDialog::initConnections() const
@@ -519,6 +897,12 @@ void ServerConfigDialog::initConnections() const
       &ServerConfigDialog::setButtonBoxEnabledButtons
   );
   connect(Settings::instance(), &Settings::settingsWritableChanged, this, &ServerConfigDialog::updateControls);
+
+  connect(ui->btnAddPauseApp, &QPushButton::clicked, this, &ServerConfigDialog::addPauseApp);
+  connect(ui->btnRemovePauseApp, &QPushButton::clicked, this, &ServerConfigDialog::removePauseApp);
+  connect(ui->btnClearPauseApps, &QPushButton::clicked, this, &ServerConfigDialog::clearPauseApps);
+  connect(ui->cbPauseApp, &QComboBox::activated, this, &ServerConfigDialog::addPauseApp);
+  connect(ui->linePauseTitles, &QLineEdit::textChanged, this, &ServerConfigDialog::setButtonBoxEnabledButtons);
 }
 
 void ServerConfigDialog::updateControls() const
@@ -538,6 +922,7 @@ void ServerConfigDialog::updateControls() const
   ui->sbSwitchDoubleTap->setEnabled(writable && ui->cbSwitchDoubleTap->isChecked());
   ui->sbSwitchDelay->setEnabled(writable && ui->cbSwitchDelay->isChecked());
   ui->groupExternalConfig->setEnabled(writable);
+  ui->groupPauseOnFocus->setEnabled(writable);
   setButtonBoxEnabledButtons();
 }
 
@@ -559,6 +944,8 @@ void ServerConfigDialog::restoreFromDefaults()
 
   ui->groupExternalConfig->setChecked(Settings::defaultValue(Settings::Server::ExternalConfig).toBool());
   ui->lineConfigFile->setText(Settings::defaultValue(Settings::Server::ExternalConfigFile).toString());
+  m_pauseApps = Settings::defaultValue(Settings::Server::PauseOnFocusApps).toStringList();
+  ui->linePauseTitles->setText(Settings::defaultValue(Settings::Server::PauseOnFocusTitles).toStringList().join(", "));
 
   refreshControls();
   updateControls();
@@ -606,7 +993,9 @@ bool ServerConfigDialog::isGeneralConfigModified() const
          m_relativeMouseMoves != Settings::value(Settings::Server::RelativeMouseMoves).toBool() ||
          m_win32keepForeground != Settings::value(Settings::Server::Win32KeepForeground).toBool() ||
          m_disableLockToComputer != Settings::value(Settings::Server::DisableLockToComputer).toBool() ||
-         m_defaultLockToComputerState != Settings::value(Settings::Server::DefaultLockToComputerState).toBool();
+         m_defaultLockToComputerState != Settings::value(Settings::Server::DefaultLockToComputerState).toBool() ||
+         m_pauseApps != Settings::value(Settings::Server::PauseOnFocusApps).toStringList() ||
+         pauseTitles() != Settings::value(Settings::Server::PauseOnFocusTitles).toStringList();
 }
 
 bool ServerConfigDialog::isGeneralConfigDefault() const
@@ -625,7 +1014,10 @@ bool ServerConfigDialog::isGeneralConfigDefault() const
          m_relativeMouseMoves == Settings::defaultValue(Settings::Server::RelativeMouseMoves).toBool() &&
          m_win32keepForeground == Settings::defaultValue(Settings::Server::Win32KeepForeground).toBool() &&
          m_disableLockToComputer == Settings::defaultValue(Settings::Server::DisableLockToComputer).toBool() &&
-         m_defaultLockToComputerState == Settings::defaultValue(Settings::Server::DefaultLockToComputerState).toBool();
+         m_defaultLockToComputerState ==
+             Settings::defaultValue(Settings::Server::DefaultLockToComputerState).toBool() &&
+         m_pauseApps == Settings::defaultValue(Settings::Server::PauseOnFocusApps).toStringList() &&
+         pauseTitles() == Settings::defaultValue(Settings::Server::PauseOnFocusTitles).toStringList();
 }
 
 void ServerConfigDialog::setButtonBoxEnabledButtons() const
@@ -634,4 +1026,175 @@ void ServerConfigDialog::setButtonBoxEnabledButtons() const
   m_buttonBox->enableSave(writable && (isGeneralConfigModified() || !(m_originalServerConfig == m_serverConfig)));
   m_buttonBox->enableReset(writable && (isGeneralConfigModified() || !(m_originalServerConfig == m_serverConfig)));
   m_buttonBox->enableRestoreDefaults(writable && !isGeneralConfigDefault() && ui->tabWidget->currentIndex() == 2);
+}
+
+void ServerConfigDialog::addPauseApp()
+{
+  const auto index = ui->cbPauseApp->currentIndex();
+  QString appName;
+  if (index >= 0 && ui->cbPauseApp->currentText() == ui->cbPauseApp->itemText(index))
+    appName = ui->cbPauseApp->itemData(index).toString();
+  else
+    appName = ui->cbPauseApp->currentText().trimmed();
+
+  if (appName.isEmpty())
+    return;
+
+  if (!m_pauseApps.contains(appName, Qt::CaseInsensitive)) {
+    m_pauseApps.append(appName);
+    m_pauseApps.sort(Qt::CaseInsensitive);
+  }
+  refreshPauseAppList();
+  ui->cbPauseApp->setCurrentIndex(-1);
+  ui->cbPauseApp->setEditText(QString());
+  ui->cbPauseApp->setFocus();
+  setButtonBoxEnabledButtons();
+}
+
+void ServerConfigDialog::removePauseApp()
+{
+  const auto selectedItems = ui->listPauseApps->selectedItems();
+  if (selectedItems.isEmpty())
+    return;
+
+  for (const auto *item : selectedItems)
+    m_pauseApps.removeAll(item->data(Qt::UserRole).toString());
+  refreshPauseAppList();
+  setButtonBoxEnabledButtons();
+}
+
+void ServerConfigDialog::clearPauseApps()
+{
+  if (m_pauseApps.isEmpty())
+    return;
+
+  m_pauseApps.clear();
+  refreshPauseAppList();
+  setButtonBoxEnabledButtons();
+}
+
+void ServerConfigDialog::refreshPauseAppList()
+{
+  ui->listPauseApps->clear();
+  for (const auto &app : m_pauseApps) {
+    const auto description = m_appDescriptions.value(app.toLower());
+    const auto label = description.isEmpty() ? app : QStringLiteral("%1 (%2)").arg(description, app);
+    auto *item = new QListWidgetItem(label, ui->listPauseApps);
+    // The configuration always stores the executable name, the label is only for the user.
+    item->setData(Qt::UserRole, app);
+    item->setToolTip(app);
+  }
+
+  const bool writable = Settings::isWritable();
+  ui->btnRemovePauseApp->setEnabled(writable && !m_pauseApps.isEmpty());
+  ui->btnClearPauseApps->setEnabled(writable && !m_pauseApps.isEmpty());
+}
+
+void ServerConfigDialog::populatePauseAppChoices()
+{
+  ui->cbPauseApp->clear();
+  m_appDescriptions.clear();
+
+  const auto running = runningProcesses();
+  QList<deskflow::gui::PauseAppChoice> choices;
+  for (const auto &process : running.m_processes) {
+    const auto key = process.m_name.toLower();
+    if (!m_appDescriptions.contains(key) || m_appDescriptions.value(key).isEmpty())
+      m_appDescriptions.insert(key, process.m_description);
+
+    bool known = false;
+    for (const auto &seen : choices) {
+      if (seen.m_executable.compare(process.m_name, Qt::CaseInsensitive) == 0) {
+        known = true;
+        break;
+      }
+    }
+    if (!known)
+      choices.append({process.m_name, process.m_description, process.m_group});
+  }
+
+  // The window with focus is the settings dialog itself while it is open, so it never counts
+  // as the foreground application. The application right behind it is the one the user came from;
+  // it is only marked, it does not leave the group it belongs to.
+  const auto ownName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
+  const auto foreground =
+      deskflow::gui::foregroundExecutable(foregroundProcessName(), ownName, recentForegroundProcessName());
+
+  for (auto &choice : choices) {
+    if (choice.m_group != 0)
+      continue;
+    if (!foreground.isEmpty() && choice.m_executable.compare(foreground, Qt::CaseInsensitive) == 0)
+      choice.m_current = true;
+  }
+
+  std::sort(choices.begin(), choices.end(), deskflow::gui::pauseAppLess);
+
+  // Group headers are disabled so they can be seen but never chosen, like the task manager groups.
+  auto addHeader = [this](const QString &text) {
+    const int index = ui->cbPauseApp->count();
+    ui->cbPauseApp->addItem(QStringLiteral("── %1 ──").arg(text));
+    if (auto *model = qobject_cast<QStandardItemModel *>(ui->cbPauseApp->model()); model != nullptr) {
+      if (auto *item = model->item(index); item != nullptr)
+        item->setFlags(item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+    }
+  };
+
+  int counts[3] = {};
+  for (const auto &choice : choices)
+    counts[choice.m_group]++;
+
+  int currentGroup = -1;
+  for (const auto &choice : choices) {
+    if (choice.m_group != currentGroup) {
+      currentGroup = choice.m_group;
+      if (currentGroup == 0)
+        addHeader(tr("Foreground applications (%1)").arg(counts[0]));
+      else if (currentGroup == 1)
+        addHeader(tr("Minimized / background (%1)").arg(counts[1]));
+      else
+        addHeader(tr("Other processes (%1)").arg(counts[2]));
+    }
+
+    const auto label =
+        choice.m_current ? QStringLiteral("%1 %2").arg(tr("(current foreground)"), choice.label()) : choice.label();
+    ui->cbPauseApp->addItem(label, choice.m_executable);
+  }
+
+#ifdef Q_OS_WIN
+  // Never hide an empty group silently. These numbers tell which step dropped an application.
+  if (!running.m_processes.isEmpty()) {
+    const auto joinNames = [](const QSet<QString> &names) {
+      QStringList list(names.cbegin(), names.cend());
+      list.sort(Qt::CaseInsensitive);
+      return list.join(QStringLiteral(", "));
+    };
+    qDebug().nospace() << "pause app choices: processes=" << running.m_processes.size()
+                       << " foregroundApps=" << running.m_foregroundApps.size()
+                       << " backgroundApps=" << running.m_backgroundApps.size() << " windows=" << running.m_windows
+                       << " hidden=" << running.m_hiddenWindows << " shell=" << running.m_shellWindows
+                       << " own=" << running.m_ownWindows << " cloaked=" << running.m_cloakedWindows
+                       << " host=" << running.m_hostWindows << " helper=" << running.m_helperWindows
+                       << " ignored=" << running.m_ignoredWindows << " unnamed=" << running.m_unnamedWindows
+                       << " groups: Foreground/Background/Other=" << counts[0] << "/" << counts[1] << "/" << counts[2];
+    qDebug().noquote() << "pause app choices foreground:" << joinNames(running.m_foregroundApps);
+    qDebug().noquote() << "pause app choices background:" << joinNames(running.m_backgroundApps);
+    if (running.m_foregroundApps.isEmpty())
+      qWarning() << "pause app choices: no visible, not minimized application was enumerated";
+  }
+#endif
+
+  ui->cbPauseApp->setCurrentIndex(-1);
+  ui->cbPauseApp->setEditText(QString());
+  refreshPauseAppList();
+}
+
+QStringList ServerConfigDialog::pauseTitles() const
+{
+  QStringList titles;
+  for (const auto &part : ui->linePauseTitles->text().split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+    const auto title = part.trimmed();
+    if (!title.isEmpty())
+      titles.append(title);
+  }
+  return titles;
 }

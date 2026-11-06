@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "deskflow/ActiveAppInfo.h"
 #include "deskflow/ClipboardTypes.h"
 #include "deskflow/IComputer.h"
 #include "deskflow/IKeyState.h"
@@ -138,6 +139,16 @@ public:
   //@}
   //! @name accessors
   //@{
+
+  //! Get the application with keyboard focus
+  /*!
+  Returns the foreground application of this computer.  Platforms without an
+  implementation return an empty info, which never matches a pause list.
+  */
+  virtual ActiveAppInfo getActiveApp() const
+  {
+    return {};
+  }
 
   //! Test if is primary computer
   /*!

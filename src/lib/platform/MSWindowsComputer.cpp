@@ -14,6 +14,7 @@
 #include "base/IEventQueue.h"
 #include "base/Log.h"
 #include "base/TMethodJob.h"
+#include "base/Unicode.h"
 #include "client/Client.h"
 #include "common/Constants.h"
 #include "common/Settings.h"
@@ -31,7 +32,9 @@
 #include <Shlobj.h>
 #include <algorithm>
 #include <comutil.h>
+#include <cstdlib>
 #include <string.h>
+#include <string_view>
 
 // suppress warning about GetVersionEx, which is used indirectly in this
 // compilation unit.
@@ -1720,6 +1723,93 @@ std::string MSWindowsComputer::getSecureInputApp() const
 {
   // ignore on Windows
   return "";
+}
+
+//! True when the window covers its whole monitor, borderless full screen
+//! included.  Maximized and windowed windows never pause switching.
+static bool isFullscreenWindow(HWND window, DWORD processId)
+{
+  // the desktop, the task bar and our own windows are not full screen apps
+  if (processId == GetCurrentProcessId()) {
+    return false;
+  }
+  wchar_t className[64] = {};
+  if (GetClassNameW(window, className, 64) > 0) {
+    if (lstrcmpiW(className, L"Progman") == 0 || lstrcmpiW(className, L"WorkerW") == 0 ||
+        lstrcmpiW(className, L"Shell_TrayWnd") == 0 || lstrcmpiW(className, L"Shell_SecondaryTrayWnd") == 0) {
+      return false;
+    }
+  }
+
+  // a maximized window keeps its caption and thick frame and stops above the
+  // task bar, so it counts as windowed even though it fills the screen
+  const auto style = static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE));
+  if ((style & WS_CAPTION) != 0 && (style & WS_THICKFRAME) != 0) {
+    return false;
+  }
+
+  MONITORINFO monitorInfo = {};
+  monitorInfo.cbSize = sizeof(monitorInfo);
+  if (!GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitorInfo)) {
+    return false;
+  }
+
+  RECT bounds = {};
+  if (!GetWindowRect(window, &bounds)) {
+    return false;
+  }
+
+  // DPI scaling and the invisible resize border can leave a few pixels
+  // uncovered, so allow eight pixels on every side
+  constexpr LONG tolerance = 8;
+  return std::abs(bounds.left - monitorInfo.rcMonitor.left) <= tolerance &&
+         std::abs(bounds.top - monitorInfo.rcMonitor.top) <= tolerance &&
+         std::abs(bounds.right - monitorInfo.rcMonitor.right) <= tolerance &&
+         std::abs(bounds.bottom - monitorInfo.rcMonitor.bottom) <= tolerance;
+}
+
+ActiveAppInfo MSWindowsComputer::getActiveApp() const
+{
+  ActiveAppInfo info;
+
+  // the foreground window belongs to the application the user is working in
+  const HWND window = GetForegroundWindow();
+  if (window == nullptr) {
+    return info;
+  }
+
+  // a window title can be empty (e.g. some full screen games), it is only
+  // used when the pause list also matches on the process name.
+  const auto maxTitleLength = 512;
+  wchar_t windowText[maxTitleLength];
+  if (const int length = GetWindowTextW(window, windowText, maxTitleLength); length > 0) {
+    info.m_windowTitle =
+        Unicode::UTF16ToUTF8(std::string_view(reinterpret_cast<const char *>(windowText), length * sizeof(wchar_t)));
+  }
+
+  DWORD processId = 0;
+  if (GetWindowThreadProcessId(window, &processId) == 0 || processId == 0) {
+    return info;
+  }
+
+  info.m_fullscreen = isFullscreenWindow(window, processId);
+
+  if (const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId); process != nullptr) {
+    wchar_t modulePath[MAX_PATH];
+    DWORD pathLength = MAX_PATH;
+    if (QueryFullProcessImageNameW(process, 0, modulePath, &pathLength) && pathLength > 0) {
+      std::wstring_view path(modulePath, pathLength);
+      if (const size_t separator = path.find_last_of(L"\\/"); separator != std::wstring_view::npos) {
+        path = path.substr(separator + 1);
+      }
+      info.m_processName = Unicode::UTF16ToUTF8(
+          std::string_view(reinterpret_cast<const char *>(path.data()), path.size() * sizeof(wchar_t))
+      );
+    }
+    CloseHandle(process);
+  }
+
+  return info;
 }
 
 bool MSWindowsComputer::isModifierRepeat(KeyModifierMask oldState, KeyModifierMask state, WPARAM wParam) const

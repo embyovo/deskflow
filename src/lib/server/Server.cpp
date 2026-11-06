@@ -10,6 +10,7 @@
 
 #include "base/IEventQueue.h"
 #include "base/Log.h"
+#include "common/Settings.h"
 #include "deskflow/AppUtil.h"
 #include "deskflow/Computer.h"
 #include "deskflow/DeskflowException.h"
@@ -28,6 +29,7 @@
 #ifdef _WIN32
 #include <algorithm>
 #include <array>
+#include <windows.h>
 #endif
 #include <cmath>
 #include <cstdlib>
@@ -35,6 +37,19 @@
 #include <ctime>
 
 using namespace deskflow::server;
+
+#ifdef _WIN32
+//! Foreground events are delivered on the event queue thread, the same thread
+//! the server runs on, so the callback may touch the server state directly.
+static Server *s_focusHookServer = nullptr;
+
+static void CALLBACK focusChangedProc(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD)
+{
+  if (s_focusHookServer != nullptr) {
+    s_focusHookServer->updateFocusPause();
+  }
+}
+#endif
 
 //
 // Server
@@ -120,6 +135,20 @@ Server::Server(ServerConfig &config, PrimaryClient *primaryClient, deskflow::Com
     m_primaryClient->fakeInputEnd();
   });
 
+#ifdef _WIN32
+  // watch foreground changes on the event queue thread.  when the hook can not
+  // be installed switching still works, it only falls back to checking focus
+  // when the cursor reaches an edge (see onMouseMovePrimary).
+  s_focusHookServer = this;
+  m_focusHook = SetWinEventHook(
+      EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, focusChangedProc, 0, 0, WINEVENT_OUTOFCONTEXT
+  );
+  if (m_focusHook == nullptr) {
+    s_focusHookServer = nullptr;
+    LOG_WARN("cannot watch foreground changes, switching falls back to the edge check");
+  }
+#endif
+
   // add connection
   addClient(m_primaryClient);
 
@@ -152,6 +181,14 @@ Server::Server(ServerConfig &config, PrimaryClient *primaryClient, deskflow::Com
 
 Server::~Server()
 {
+#ifdef _WIN32
+  if (m_focusHook != nullptr) {
+    UnhookWinEvent(static_cast<HWINEVENTHOOK>(m_focusHook));
+    m_focusHook = nullptr;
+    s_focusHookServer = nullptr;
+  }
+#endif
+
   // remove event handlers and timers
   using enum EventTypes;
   m_events->removeHandler(KeyStateKeyDown, m_inputFilter);
@@ -384,6 +421,27 @@ bool Server::isLockedToComputer() const
 
   // not locked
   return false;
+}
+
+bool Server::isPauseActive() const
+{
+  // only pause while the user is on the primary computer.  if the mouse is on
+  // a secondary computer, its foreground application is unrelated and input
+  // must keep being forwarded, otherwise the user would get stuck there.
+  if (m_active != m_primaryClient || m_focusPause.isEmpty()) {
+    return false;
+  }
+
+  return m_focusPause.shouldPause(m_computer->getActiveApp());
+}
+
+void Server::updateFocusPause()
+{
+  // called from the foreground event hook and from the edge check, both on the
+  // event queue thread.  no m_active test here: the fast path only runs while
+  // the cursor is on the primary computer anyway.
+  const bool paused = !m_focusPause.isEmpty() && m_focusPause.shouldPause(m_computer->getActiveApp());
+  m_focusPauseActive.store(paused, std::memory_order_relaxed);
 }
 
 int32_t Server::getJumpZoneSize(const BaseClientProxy *client) const
@@ -1129,6 +1187,25 @@ void Server::processOptions()
   }
   m_relativeMoves = newRelativeMoves;
   m_protocol = Settings::networkProtocol();
+
+  // the pause list lives in the application settings, so refresh it whenever
+  // the server configuration is reloaded
+  const auto pauseApps = Settings::value(Settings::Server::PauseOnFocusApps).toStringList();
+  std::set<std::string> processNames;
+  for (const auto &app : pauseApps) {
+    processNames.insert(app.toStdString());
+  }
+
+  std::vector<std::string> windowTitles;
+  for (const auto &title : Settings::value(Settings::Server::PauseOnFocusTitles).toStringList()) {
+    windowTitles.push_back(title.toStdString());
+  }
+
+  m_focusPause.setRules(std::move(processNames), std::move(windowTitles));
+  if (!m_focusPause.isEmpty()) {
+    LOG_INFO("pausing switching while these applications have focus: %s", pauseApps.join(", ").toStdString().c_str());
+  }
+  updateFocusPause();
 }
 
 void Server::handleShapeChanged(BaseClientProxy *client)
@@ -1278,6 +1355,13 @@ void Server::handleSwitchWaitTimeout()
   // ignore if mouse is locked to computer
   if (isLockedToComputer()) {
     LOG_VERBOSE("locked to computer");
+    stopSwitch();
+    return;
+  }
+
+  // ignore if the focused application paused switching
+  if (isPauseActive()) {
+    LOG_VERBOSE("switching is paused");
     stopSwitch();
     return;
   }
@@ -1630,6 +1714,12 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
   m_x = x;
   m_y = y;
 
+  // fast path: the foreground hook keeps this current, so a paused application
+  // costs a single boolean read per mouse event and no Win32 call at all
+  if (m_focusPauseActive.load(std::memory_order_relaxed)) {
+    return false;
+  }
+
   // get computer shape
   int32_t ax;
   int32_t ay;
@@ -1679,6 +1769,17 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
     noSwitch(x, y);
     return false;
   }
+
+  // the hook can miss events (session switch, protected process, hook not
+  // installable), so re-check focus at the moment of the switch and keep the
+  // cache honest.  this only runs while the cursor is in the jump zone.
+  if (const bool paused = isPauseActive()) {
+    m_focusPauseActive.store(true, std::memory_order_relaxed);
+    LOG_VERBOSE("focused application paused switching");
+    stopSwitch();
+    return false;
+  }
+  m_focusPauseActive.store(false, std::memory_order_relaxed);
 
   // check both horizontally and vertically
   std::array<Direction, 2> dirs = {dirh, dirv};

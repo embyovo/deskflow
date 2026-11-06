@@ -467,4 +467,9 @@ std::string Computer::getSecureInputApp() const
   return m_computer->getSecureInputApp();
 }
 
+ActiveAppInfo Computer::getActiveApp() const
+{
+  return m_computer->getActiveApp();
+}
+
 } // namespace deskflow

@@ -121,6 +121,7 @@ public:
   void setSequenceNumber(uint32_t) override;
   bool isPrimary() const override;
   std::string getSecureInputApp() const override;
+  ActiveAppInfo getActiveApp() const override;
 
 protected:
   // IPlatformComputer overrides

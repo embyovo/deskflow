@@ -16,7 +16,9 @@
 #include "deskflow/KeyTypes.h"
 #include "deskflow/MouseTypes.h"
 #include "server/Config.h"
+#include "server/FocusPause.h"
 
+#include <atomic>
 #include <climits>
 #include <map>
 #include <set>
@@ -40,6 +42,7 @@ This class implements the top-level server algorithms for deskflow.
 class Server
 {
   using ServerConfig = deskflow::server::Config;
+  using FocusPause = deskflow::server::FocusPause;
 
 public:
   //! Lock cursor to computer data
@@ -200,6 +203,9 @@ public:
   void sendConnectedClientsIpc() const;
   size_t getMaximumClipboardSizeBytes() const;
 
+  //! Refresh the cached focus pause state, called by the foreground event hook
+  void updateFocusPause();
+
   //@}
 
 private:
@@ -217,6 +223,10 @@ private:
   // returns true iff mouse should be locked to the current m_computer
   // according to this object or the primary client.
   bool isLockedToComputer() const;
+
+  // returns true iff switching is paused because a listed app has focus on
+  // the primary computer.
+  bool isPauseActive() const;
 
   // returns the jump zone of the client
   int32_t getJumpZoneSize(const BaseClientProxy *) const;
@@ -468,4 +478,15 @@ private:
   bool m_defaultLockToComputerState = false;
   bool m_disableLockToComputer = false;
   bool m_enableClipboard = true;
+
+  // pause computer switching while a listed app has focus
+  FocusPause m_focusPause;
+
+  // cached pause state, read once per mouse event on the fast path
+  std::atomic<bool> m_focusPauseActive = false;
+
+#ifdef _WIN32
+  //! foreground event hook, null when the hook is unavailable
+  void *m_focusHook = nullptr;
+#endif
 };

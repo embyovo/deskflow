@@ -352,6 +352,9 @@ QVariant Settings::defaultValue(const QString &key)
   if (key == Server::ExternalConfigFile)
     return QStringLiteral("%1/%2-server.conf").arg(Settings::settingsPath(), kAppId);
 
+  if (key == Server::PauseOnFocusApps || key == Server::PauseOnFocusTitles)
+    return QStringList();
+
   if (key == Core::Port)
     return 24800;
 

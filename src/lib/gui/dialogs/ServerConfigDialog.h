@@ -13,6 +13,8 @@
 #include "config/ServerConfig.h"
 
 #include <QDialog>
+#include <QHash>
+#include <QStringList>
 
 class SettingsDialogButtonBox;
 class QItemSelection;
@@ -71,6 +73,10 @@ protected:
   void toggleExternalConfig(bool enable = false);
   bool browseConfigFile();
 
+  void addPauseApp();
+  void removePauseApp();
+  void clearPauseApps();
+
   ServerConfig &serverConfig()
   {
     return m_serverConfig;
@@ -93,6 +99,9 @@ private:
   void initConnections() const;
   void updateControls() const;
   void restoreFromDefaults();
+  void refreshPauseAppList();
+  void populatePauseAppChoices();
+  QStringList pauseTitles() const;
   void setServerConfig();
   bool isGeneralConfigModified() const;
   bool isGeneralConfigDefault() const;
@@ -117,6 +126,9 @@ private:
   bool m_disableLockToComputer;
   bool m_defaultLockToComputerState;
   QString m_originalServerConfigUsesExternalFile;
+  QStringList m_pauseApps;
+  // Executable name (lower case) to the description taken from the executable version info.
+  QHash<QString, QString> m_appDescriptions;
   ServerConfig m_serverConfig;
   ComputerSetupModel m_computerSetupModel;
   SettingsDialogButtonBox *m_buttonBox = nullptr;

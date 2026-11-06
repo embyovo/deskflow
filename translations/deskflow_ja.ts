@@ -1102,6 +1102,58 @@ Enabling this setting will disable the server config GUI.</source>
         <source>Enable lock to computer at startup</source>
         <translation>起動時にコンピューター間移動のロックを有効にする</translation>
     </message>
+    <message>
+        <source>&amp;Pause switching on focus</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Switching and input forwarding pause while one of these applications has focus. Applications are matched by executable name, ignoring case.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Pick a running application or type an executable name, e.g. chrome.exe</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>&amp;Add</source>
+        <translation type="unfinished">追加(&amp;A)</translation>
+    </message>
+    <message>
+        <source>C&amp;lear</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Only when the window title contains:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Optional. Comma separated fragments, e.g. YouTube, Visual Studio</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Optional, comma separated</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Saving restarts the server, so the list is used right away.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>(current foreground)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Other processes (%1)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Foreground applications (%1)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Minimized / background (%1)</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>SettingsDialog</name>

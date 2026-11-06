@@ -485,6 +485,10 @@ private:
   // cached pause state, read once per mouse event on the fast path
   std::atomic<bool> m_focusPauseActive = false;
 
+  //! True once the focus was re-checked during the current visit to the jump
+  //! zone, so the edge path does not call Win32 on every mouse event
+  bool m_focusPauseEdgeChecked = false;
+
 #ifdef _WIN32
   //! foreground event hook, null when the hook is unavailable
   void *m_focusHook = nullptr;

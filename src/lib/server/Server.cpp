@@ -437,11 +437,14 @@ bool Server::isPauseActive() const
 
 void Server::updateFocusPause()
 {
-  // called from the foreground event hook and from the edge check, both on the
-  // event queue thread.  no m_active test here: the fast path only runs while
-  // the cursor is on the primary computer anyway.
+  // called from the foreground event hook and from a configuration change, both
+  // on the event queue thread.  no m_active test here: the fast path only runs
+  // while the cursor is on the primary computer anyway.
   const bool paused = !m_focusPause.isEmpty() && m_focusPause.shouldPause(m_computer->getActiveApp());
   m_focusPauseActive.store(paused, std::memory_order_relaxed);
+
+  // a different foreground app invalidates the check done in the jump zone
+  m_focusPauseEdgeChecked = false;
 }
 
 int32_t Server::getJumpZoneSize(const BaseClientProxy *client) const
@@ -498,6 +501,10 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
 
   // stop waiting to switch
   stopSwitch();
+
+  // the next visit to the jump zone starts on a different computer, let it
+  // re-check the focus again
+  m_focusPauseEdgeChecked = false;
 
   // record new position
   m_x = x;
@@ -1714,12 +1721,6 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
   m_x = x;
   m_y = y;
 
-  // fast path: the foreground hook keeps this current, so a paused application
-  // costs a single boolean read per mouse event and no Win32 call at all
-  if (m_focusPauseActive.load(std::memory_order_relaxed)) {
-    return false;
-  }
-
   // get computer shape
   int32_t ax;
   int32_t ay;
@@ -1727,6 +1728,18 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
   int32_t ah;
   m_active->getShape(ax, ay, aw, ah);
   int32_t zoneSize = getJumpZoneSize(m_active);
+
+  // fast path: the foreground hook keeps this current, so a paused application
+  // costs one boolean read and a few comparisons per mouse event.  the value is
+  // only a hint though: the hook can miss events (session switch, protected
+  // process, hook not installable), so when the cursor reaches an edge the once
+  // per visit check below re-reads the focus instead of trusting the cache
+  if (m_focusPauseActive.load(std::memory_order_relaxed)) {
+    const bool atEdge = x < ax + zoneSize || x >= ax + aw - zoneSize || y < ay + zoneSize || y >= ay + ah - zoneSize;
+    if (!atEdge) {
+      return false;
+    }
+  }
 
   // clamp position to computer
   int32_t xc = x;
@@ -1765,21 +1778,26 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
     dirv = Bottom;
   }
   if (dirh == NoDirection && dirv == NoDirection) {
-    // still on local computer
+    // still on local computer.  the cursor left the jump zone, so the focus is
+    // checked again on the next visit
+    m_focusPauseEdgeChecked = false;
     noSwitch(x, y);
     return false;
   }
 
   // the hook can miss events (session switch, protected process, hook not
   // installable), so re-check focus at the moment of the switch and keep the
-  // cache honest.  this only runs while the cursor is in the jump zone.
-  if (const bool paused = isPauseActive()) {
-    m_focusPauseActive.store(true, std::memory_order_relaxed);
+  // cache honest.  this runs once per visit to the jump zone, not on every
+  // mouse event: the hook usually already knows the answer.
+  if (!m_focusPauseEdgeChecked) {
+    m_focusPauseEdgeChecked = true;
+    m_focusPauseActive.store(isPauseActive(), std::memory_order_relaxed);
+  }
+  if (m_focusPauseActive.load(std::memory_order_relaxed)) {
     LOG_VERBOSE("focused application paused switching");
     stopSwitch();
     return false;
   }
-  m_focusPauseActive.store(false, std::memory_order_relaxed);
 
   // check both horizontally and vertically
   std::array<Direction, 2> dirs = {dirh, dirv};

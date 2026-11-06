@@ -64,6 +64,15 @@ public:
 
   void setMode(EHookMode mode);
 
+  //! Mouse moves relayed while watching the jump zone, for switch tracing.
+  static uint32_t relayedMoveCount();
+
+  //! Mouse moves eaten inside the jump zone, for switch tracing.
+  static uint32_t eatenMoveCount();
+
+  //! Tick (GetTickCount64) of the last relayed move, for switch tracing.
+  static uint64_t lastMoveTick();
+
   //! Copy the hook's physical key state; false until it has observed an event.
   static bool getPhysicalKeyState(BYTE keys[kVirtualKeyCount]);
 

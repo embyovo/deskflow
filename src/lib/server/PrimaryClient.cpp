@@ -101,11 +101,14 @@ void PrimaryClient::disable()
 
 void PrimaryClient::enter(int32_t xAbs, int32_t yAbs, uint32_t seqNum, KeyModifierMask mask, bool screensaver)
 {
+  LOG_DEBUG("SWITCHTRACE primary enter begin");
   m_computer->setSequenceNumber(seqNum);
   if (!screensaver) {
     m_computer->warpCursor(xAbs, yAbs);
+    LOG_DEBUG("SWITCHTRACE primary warp done");
   }
   m_computer->enter(mask);
+  LOG_DEBUG("SWITCHTRACE primary enter done");
 }
 
 bool PrimaryClient::leave()

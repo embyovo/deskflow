@@ -10,6 +10,7 @@
 #include "base/Log.h"
 #include "deskflow/DisplayException.h"
 
+#include <atomic>
 #include <cstring>
 #include <mutex>
 
@@ -44,6 +45,12 @@ static std::mutex g_keyStateMutex;
 static DWORD g_hookThread = 0;
 static bool g_fakeServerInput = false;
 static BOOL g_isPrimary = TRUE;
+
+// cheap counters that let a switch trace show what the hook saw while a
+// switch was in progress, without logging from inside the hook itself
+static std::atomic<uint32_t> g_relayedMoves = 0;
+static std::atomic<uint32_t> g_eatenMoves = 0;
+static std::atomic<uint64_t> g_lastMoveTick = 0;
 
 MSWindowsHook::~MSWindowsHook()
 {
@@ -147,6 +154,21 @@ void MSWindowsHook::setMode(EHookMode mode)
     return;
   }
   g_mode = mode;
+}
+
+uint32_t MSWindowsHook::relayedMoveCount()
+{
+  return g_relayedMoves.load(std::memory_order_relaxed);
+}
+
+uint32_t MSWindowsHook::eatenMoveCount()
+{
+  return g_eatenMoves.load(std::memory_order_relaxed);
+}
+
+uint64_t MSWindowsHook::lastMoveTick()
+{
+  return g_lastMoveTick.load(std::memory_order_relaxed);
 }
 
 bool MSWindowsHook::getPhysicalKeyState(BYTE keys[MSWindowsHook::kVirtualKeyCount])
@@ -612,10 +634,16 @@ static bool mouseHookHandler(WPARAM wParam, int32_t x, int32_t y, int32_t data)
       }
 
       // relay the event
+      g_relayedMoves.fetch_add(1, std::memory_order_relaxed);
+      g_lastMoveTick.store(GetTickCount64(), std::memory_order_relaxed);
       PostThreadMessage(g_threadID, DESKFLOW_MSG_MOUSE_MOVE, x, y);
 
       // if inside and not bogus then eat the event
-      return inside && !bogus;
+      if (inside && !bogus) {
+        g_eatenMoves.fetch_add(1, std::memory_order_relaxed);
+        return true;
+      }
+      return false;
     }
   }
 

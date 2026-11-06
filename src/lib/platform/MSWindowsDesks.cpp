@@ -81,6 +81,14 @@
 // enable; <unused>
 #define DESKFLOW_MSG_FAKE_INPUT DESKFLOW_HOOK_LAST_MSG + 12
 
+//! True when Windows reports the system cursor as visible, for switch tracing.
+static bool isSystemCursorVisible()
+{
+  CURSORINFO info;
+  info.cbSize = sizeof(info);
+  return GetCursorInfo(&info) != 0 && (info.flags & CURSOR_SHOWING) != 0;
+}
+
 static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
 {
   INPUT inp;
@@ -351,8 +359,16 @@ bool MSWindowsDesks::restoreRelativeCursorPosition(Desk *desk) const
 void MSWindowsDesks::sendMessage(UINT msg, WPARAM wParam, LPARAM lParam) const
 {
   if (m_activeDesk != nullptr && m_activeDesk->m_window != nullptr) {
+    LOG_DEBUG(
+        "SWITCHTRACE post msg=%u thread=%u relayed=%u eaten=%u", msg, GetCurrentThreadId(),
+        MSWindowsHook::relayedMoveCount(), MSWindowsHook::eatenMoveCount()
+    );
     PostThreadMessage(m_activeDesk->m_threadID, msg, wParam, lParam);
     waitForDesk();
+    LOG_DEBUG(
+        "SWITCHTRACE processed msg=%u thread=%u relayed=%u eaten=%u", msg, GetCurrentThreadId(),
+        MSWindowsHook::relayedMoveCount(), MSWindowsHook::eatenMoveCount()
+    );
   }
 }
 
@@ -533,6 +549,7 @@ void setCursorVisibility(bool visible)
 
 void MSWindowsDesks::deskEnter(Desk *desk)
 {
+  LOG_DEBUG("SWITCHTRACE deskEnter begin thread=%u primary=%d", GetCurrentThreadId(), m_isPrimary);
   if (!m_isPrimary) {
     ReleaseCapture();
     if (m_relativeMouseMoves) {
@@ -541,6 +558,7 @@ void MSWindowsDesks::deskEnter(Desk *desk)
   }
 
   setCursorVisibility(true);
+  LOG_DEBUG("SWITCHTRACE deskEnter cursor visible thread=%u visible=%d", GetCurrentThreadId(), isSystemCursorVisible());
 
   SetWindowPos(desk->m_window, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
 
@@ -552,20 +570,29 @@ void MSWindowsDesks::deskEnter(Desk *desk)
   // after being raised doesn't work.
   DWORD thisThread = GetWindowThreadProcessId(desk->m_window, nullptr);
   DWORD thatThread = GetWindowThreadProcessId(desk->m_foregroundWindow, nullptr);
+  LOG_DEBUG(
+      "SWITCHTRACE deskEnter restore fg=%p hider=%p thread=%u", (void *)desk->m_foregroundWindow,
+      (void *)desk->m_window, GetCurrentThreadId()
+  );
   AttachThreadInput(thatThread, thisThread, TRUE);
+  LOG_DEBUG("SWITCHTRACE deskEnter attached thread=%u", GetCurrentThreadId());
   SetForegroundWindow(desk->m_foregroundWindow);
+  LOG_DEBUG("SWITCHTRACE deskEnter foreground restored thread=%u", GetCurrentThreadId());
   AttachThreadInput(thatThread, thisThread, FALSE);
   EnableWindow(desk->m_window, desk->m_lowLevel ? FALSE : TRUE);
   desk->m_foregroundWindow = nullptr;
+  LOG_DEBUG("SWITCHTRACE deskEnter done thread=%u", GetCurrentThreadId());
 }
 
 void MSWindowsDesks::deskLeave(Desk *desk, HKL keyLayout)
 {
+  LOG_DEBUG("SWITCHTRACE deskLeave begin thread=%u primary=%d", GetCurrentThreadId(), m_isPrimary);
   if (!m_isPrimary && m_relativeMouseMoves) {
     saveRelativeRestorePosition(desk);
   }
 
   setCursorVisibility(false);
+  LOG_DEBUG("SWITCHTRACE deskLeave cursor hidden thread=%u visible=%d", GetCurrentThreadId(), isSystemCursorVisible());
 
   if (m_isPrimary) {
     // map a window to hide the cursor and to use whatever keyboard
@@ -611,6 +638,16 @@ void MSWindowsDesks::deskLeave(Desk *desk, HKL keyLayout)
     // need to disable the window on deskEnter.
     else {
       desk->m_foregroundWindow = getForegroundWindow();
+      wchar_t fgClass[128] = {};
+      DWORD fgPid = 0;
+      if (desk->m_foregroundWindow != nullptr) {
+        GetClassNameW(desk->m_foregroundWindow, fgClass, 128);
+        GetWindowThreadProcessId(desk->m_foregroundWindow, &fgPid);
+      }
+      LOG_DEBUG(
+          "SWITCHTRACE deskLeave fg=%p pid=%u class=\"%ls\" hider=%p thread=%u", (void *)desk->m_foregroundWindow,
+          fgPid, fgClass, (void *)desk->m_window, GetCurrentThreadId()
+      );
       if (desk->m_foregroundWindow != nullptr) {
         EnableWindow(desk->m_window, TRUE);
         SetActiveWindow(desk->m_window);
@@ -618,7 +655,9 @@ void MSWindowsDesks::deskLeave(Desk *desk, HKL keyLayout)
         DWORD thatThread = GetWindowThreadProcessId(desk->m_foregroundWindow, nullptr);
 
         AttachThreadInput(thatThread, thisThread, TRUE);
+        LOG_DEBUG("SWITCHTRACE deskLeave attached thread=%u", GetCurrentThreadId());
         SetForegroundWindow(desk->m_window);
+        LOG_DEBUG("SWITCHTRACE deskLeave foreground taken thread=%u", GetCurrentThreadId());
         AttachThreadInput(thatThread, thisThread, FALSE);
       }
     }
@@ -644,6 +683,7 @@ void MSWindowsDesks::deskLeave(Desk *desk, HKL keyLayout)
     ARCH->sleep(0.03);
     deskMouseMove(m_xCenter, m_yCenter);
   }
+  LOG_DEBUG("SWITCHTRACE deskLeave done thread=%u", GetCurrentThreadId());
 }
 
 void MSWindowsDesks::deskThread(const void *vdesk)
@@ -783,6 +823,7 @@ void MSWindowsDesks::deskThread(const void *vdesk)
     }
 
     // notify that message was processed
+    LOG_DEBUG("SWITCHTRACE desk thread handled msg=%u thread=%u", msg.message, GetCurrentThreadId());
     Lock lock(&m_mutex);
     m_deskReady = true;
     m_deskReady.broadcast();

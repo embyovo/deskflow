@@ -495,6 +495,9 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
   assert(m_active != nullptr);
 
   LOG_INFO("switch from \"%s\" to \"%s\" at %d,%d", getName(m_active).c_str(), getName(dst).c_str(), x, y);
+  LOG_DEBUG(
+      "SWITCHTRACE switchComputer begin active=\"%s\" dst=\"%s\"", getName(m_active).c_str(), getName(dst).c_str()
+  );
 
   // stop waiting to switch
   stopSwitch();
@@ -517,6 +520,7 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
       LOG_WARN("can't leave computer");
       return;
     }
+    LOG_DEBUG("SWITCHTRACE switchComputer leave returned");
 
     // update the primary client's clipboards if we're leaving the
     // primary computer.
@@ -543,12 +547,14 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
 
     // cut over
     m_active = dst;
+    LOG_DEBUG("SWITCHTRACE switchComputer clipboard done");
 
     // increment enter sequence number
     ++m_seqNum;
 
     // enter new computer
     m_active->enter(x, y, m_seqNum, m_primaryClient->getToggleMask(), forScreensaver);
+    LOG_DEBUG("SWITCHTRACE switchComputer enter returned");
 
     if (m_enableClipboard) {
       // send the clipboard data to new active computer
@@ -563,6 +569,7 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
 
     auto *info = new Server::SwitchToComputerInfo(m_active->getName());
     m_events->addEvent(Event(EventTypes::ServerComputerSwitched, this, info));
+    LOG_DEBUG("SWITCHTRACE switchComputer done");
   } else {
     m_active->mouseMove(x, y);
   }

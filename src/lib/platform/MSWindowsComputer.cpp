@@ -239,7 +239,9 @@ void MSWindowsComputer::disable()
 
 void MSWindowsComputer::enter()
 {
+  LOG_DEBUG("SWITCHTRACE enter begin thread=%u primary=%d", GetCurrentThreadId(), m_isPrimary);
   m_desks->enter();
+  LOG_DEBUG("SWITCHTRACE enter desk returned thread=%u", GetCurrentThreadId());
   if (m_isPrimary) {
     // enable special key sequences on win95 family
     enableSpecialKeys(true);
@@ -265,6 +267,7 @@ void MSWindowsComputer::enter()
   // now on computer
   m_isOnComputer = true;
   setupMouseKeys();
+  LOG_DEBUG("SWITCHTRACE enter done thread=%u", GetCurrentThreadId());
 }
 
 bool MSWindowsComputer::canLeave()
@@ -282,6 +285,7 @@ bool MSWindowsComputer::canLeave()
 
 void MSWindowsComputer::leave()
 {
+  LOG_DEBUG("SWITCHTRACE leave begin thread=%u primary=%d", GetCurrentThreadId(), m_isPrimary);
   // get keyboard layout of foreground window.  we'll use this
   // keyboard layout for translating keys sent to clients.
   m_keyLayout = AppUtilWindows::instance().getCurrentKeyboardLayout();
@@ -291,10 +295,19 @@ void MSWindowsComputer::leave()
 
   // tell desk that we're leaving and tell it the keyboard layout
   m_desks->leave(m_keyLayout);
+  {
+    const uint64_t lastMove = MSWindowsHook::lastMoveTick();
+    const int64_t lastMoveAgo = lastMove == 0 ? -1 : static_cast<int64_t>(GetTickCount64() - lastMove);
+    LOG_DEBUG(
+        "SWITCHTRACE leave desk returned thread=%u relayed=%u eaten=%u last-move-ago=%lldms", GetCurrentThreadId(),
+        MSWindowsHook::relayedMoveCount(), MSWindowsHook::eatenMoveCount(), lastMoveAgo
+    );
+  }
 
   if (m_isPrimary) {
     LOG_VERBOSE("centering cursor on leave: %+d, %+d", m_xCenter, m_yCenter);
     warpCursor(m_xCenter, m_yCenter);
+    LOG_DEBUG("SWITCHTRACE leave warp done thread=%u", GetCurrentThreadId());
 
     // disable special key sequences on win95 family
     enableSpecialKeys(false);
@@ -307,6 +320,7 @@ void MSWindowsComputer::leave()
     m_keyState->saveModifiers();
 
     m_hook.setMode(kHOOK_RELAY_EVENTS);
+    LOG_DEBUG("SWITCHTRACE leave hook=relay thread=%u", GetCurrentThreadId());
 
     m_primaryKeyDownList.clear();
     for (KeyButton i = 0; i < IKeyState::s_numButtons; ++i) {
@@ -319,6 +333,7 @@ void MSWindowsComputer::leave()
 
   // now off computer
   m_isOnComputer = false;
+  LOG_DEBUG("SWITCHTRACE leave done thread=%u", GetCurrentThreadId());
 }
 
 bool MSWindowsComputer::setClipboard(ClipboardID, const IClipboard *src)

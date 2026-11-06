@@ -85,8 +85,10 @@ is used right away and no manual restart is needed.
   server. The hook updates a cached boolean, which the mouse path reads once per
   event, so a paused application costs a single boolean read per mouse event.
   When the cursor reaches the edge of the primary screen the application is
-  checked again; that keeps switching correct even if the hook misses an event
-  (session switch, protected processes) or cannot be installed at all.
+  checked again **once per visit**: that keeps switching correct even if the hook
+  misses an event (session switch, protected processes) or cannot be installed
+  at all, and a cached `true` that is out of date is corrected before the switch
+  instead of blocking the first attempt.
 * The pause ends as soon as the foreground changes away from the listed
   application (the hook fires immediately, no polling interval), and no later
   than the next edge check.
@@ -219,6 +221,44 @@ What it does:
 The script is safe to run repeatedly: without new upstream commits it just
 reports that there is nothing to do.
 
+## Automatic upstream sync and release
+
+`.github/workflows/upstream-sync.yml` does the same merge unattended and only
+publishes when the result is verified.
+
+* Trigger: every day at 03:00 UTC, plus `workflow_dispatch` with an optional
+  `upstream_tag` input.
+* It reads the latest **release** tag of `deskflow/deskflow` with the GitHub API
+  (nightly and pre-release tags are ignored, and the API is used because GitHub
+  has no ordering on tags).
+* If that tag is already an ancestor of `master` (`git merge-base --is-ancestor`)
+  the run stops. No state file is needed, so runs are idempotent.
+* Otherwise it merges with `--no-ff`. History is never rewritten and nothing is
+  ever force pushed. On a conflict the merge is aborted, `master` stays where it
+  is, the job fails and an issue is opened automatically.
+* It then builds and runs the unit tests on the merged tree with the same steps
+  as `windows-build.yml` (`install-dependencies`, `run-tests`).
+* **Only after a green build and test run** does it push `master`, create the
+  release tag and start `release-windows.yml`. A failed build or test therefore
+  never produces a tag or a release.
+* `GITHUB_TOKEN` pushes do not start other workflows, so the release is started
+  explicitly with `gh workflow run release-windows.yml --ref <tag>`
+  (`workflow_dispatch` is exempt from that restriction).
+
+### Version policy
+
+| Source | Tag | Package version |
+| --- | --- | --- |
+| Upstream release `v1.27.0`, first sync | `v1.27.0-deskflow.1` | `1.27.0-deskflow.1` |
+| Same upstream tag again (manual re-run) | `v1.27.0-deskflow.2` | `1.27.0-deskflow.2` |
+| Manual fork release | `v1.1.2-focus-test` | `1.1.2-focus-test` |
+
+The `-deskflow.N` suffix keeps the fork tag distinct from every upstream tag, so
+the two remotes can be fetched into the same repository without a collision, and
+the upstream version number stays visible in the package name. The suffix
+counter is chosen by probing the existing refs, so a repeated sync of the same
+upstream tag never overwrites an older release.
+
 ## Repository keepalive
 
 GitHub automatically disables **schedule**-triggered workflows after 60 days
@@ -255,6 +295,7 @@ disabled, which is always listed at the top of the Actions page.
 | `.github/workflows/windows-build.yml` | Windows build job (MSVC 2022, Qt, OpenSSL 3 from vcpkg) with installer artifacts. |
 | `.github/workflows/release-windows.yml` | Tag driven Windows build that publishes a GitHub release. |
 | `.github/scripts/sync-upstream.ps1` | Merges upstream into the current branch and stops on conflicts. |
+| `.github/workflows/upstream-sync.yml` | Daily merge of the latest upstream release, build + tests, then tag and release. |
 | `.github/workflows/keepalive.yml`, `.github/keepalive.md` | Weekly timestamp commit so GitHub does not disable the scheduled workflow. |
 | `src/unittests/server/FocusPauseTests.*`, `CMakeLists.txt` | Unit tests for the matching and resume logic. |
 | `docs/pause-on-focus.md` | This document. |

@@ -1,0 +1,168 @@
+# Upstream sync and automatic release for this fork.
+#
+# Every day (or on demand) this merges the latest release tag of the official
+# Deskflow repository into `master`, builds it, runs the unit tests and only
+# then publishes a fork release.  It never rewrites history, never force pushes
+# and stops before pushing anything when the merge conflicts or a test fails.
+
+name: Upstream sync
+
+on:
+  schedule:
+    # every day at 03:00 UTC
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream tag to merge (empty = latest upstream release)"
+        required: false
+        default: ""
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: deskflow/deskflow
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CMAKE_CONFIGURE: "cmake -Bbuild -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+
+jobs:
+  sync:
+    name: upstream-sync
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      # The latest *release* is used, not the newest tag, so nightly or
+      # pre-release tags of upstream are ignored.
+      - name: Resolve upstream tag
+        id: upstream
+        shell: bash
+        env:
+          REQUESTED: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED}" ]; then
+            tag="${REQUESTED}"
+          else
+            tag="$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq .tag_name)"
+          fi
+          echo "Upstream tag: ${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch upstream tag
+        shell: bash
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" \
+            "+refs/tags/${TAG}:refs/tags/upstream/${TAG}"
+
+      # An already merged tag is an ancestor of master, so no state file is
+      # needed and the workflow is safe to run again and again.
+      - name: Check whether it is already merged
+        id: check
+        shell: bash
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor "upstream/${TAG}" HEAD; then
+            echo "already=yes" >> "$GITHUB_OUTPUT"
+            echo "Upstream ${TAG} is already merged into master, nothing to do."
+          else
+            echo "already=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A merge (never a rebase) keeps the published history intact.  On a
+      # conflict the merge is aborted, so master and the release stay untouched.
+      - name: Merge upstream
+        if: steps.check.outputs.already == 'no'
+        shell: bash
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "deskflow-sync"
+          git config user.email "deskflow-sync@users.noreply.github.com"
+          if ! git merge --no-ff --no-edit -m "Merge upstream ${TAG}" "upstream/${TAG}"; then
+            git merge --abort
+            echo "::error::Merge of upstream ${TAG} conflicts, nothing was pushed."
+            exit 1
+          fi
+
+      - name: Setup VC++ environment
+        if: steps.check.outputs.already == 'no'
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: amd64
+          spectre: true
+
+      - name: Install dependencies
+        if: steps.check.outputs.already == 'no'
+        id: get-deps
+        uses: ./.github/actions/install-dependencies
+        with:
+          qt-version: 6.12
+          vcpkg-triplet: x64-windows-release
+
+      - name: Configure
+        if: steps.check.outputs.already == 'no'
+        run: ${{env.CMAKE_CONFIGURE}} -G Ninja ${{ steps.get-deps.outputs.vcpkg-cmake-config }} -DPACKAGE_VERSION_LABEL="continuous"
+
+      - name: Build
+        if: steps.check.outputs.already == 'no'
+        run: cmake --build build --config Release -j8 --target package
+
+      # Gates the release: no tag, no release without a green test run.
+      - name: Tests
+        if: steps.check.outputs.already == 'no'
+        uses: ./.github/actions/run-tests
+        timeout-minutes: 10
+        with:
+          job: upstream-sync
+
+      # GITHUB_TOKEN pushes do not start other workflows, so the tag is created
+      # through the API and the release workflow is dispatched explicitly
+      # (workflow_dispatch is allowed to be triggered this way).
+      - name: Publish synchronized release
+        if: steps.check.outputs.already == 'no'
+        shell: bash
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+          n=1
+          while gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}-deskflow.${n}" >/dev/null 2>&1; do
+            n=$((n + 1))
+          done
+          our_tag="${TAG}-deskflow.${n}"
+          git push origin master
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${our_tag}" -f sha="$(git rev-parse HEAD)" >/dev/null
+          echo "Created ${our_tag} on $(git rev-parse HEAD)"
+          gh workflow run release-windows.yml --ref "${our_tag}"
+
+      - name: Report failure
+        if: failure() && steps.check.outputs.already == 'no'
+        shell: bash
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create \
+            --title "Upstream sync failed: ${TAG}" \
+            --body "The automatic merge of upstream ${TAG} did not finish. Nothing was pushed to master and no release was created. See ${RUN_URL}."
